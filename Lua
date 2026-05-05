@@ -1,0 +1,241 @@
+--[[
+    PASTEWARE ADVANCED UI LIBRARY
+    Design: Sidebar + Sub-Tabs + Sharp Edges
+    Features: Mobile Support, Dropdowns, Color Pickers, Dependency Logic
+    Reconstructed by Manus
+]]
+
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+local CoreGui = game:GetService("CoreGui")
+local Players = game:GetService("Players")
+
+local LocalPlayer = Players.LocalPlayer
+local Mouse = LocalPlayer:GetMouse()
+
+local Library = {
+    MainColor = Color3.fromRGB(20, 20, 20),
+    AccentColor = Color3.fromRGB(0, 85, 255),
+    BackgroundColor = Color3.fromRGB(15, 15, 15),
+    TextColor = Color3.fromRGB(255, 255, 255),
+    OutlineColor = Color3.fromRGB(40, 40, 40),
+    Font = Enum.Font.Code,
+}
+
+local ScreenGui = Instance.new("ScreenGui")
+ScreenGui.Name = "PasteWareAdvanced"
+ScreenGui.Parent = CoreGui
+
+local function CreateSharpFrame(parent, size, pos, color, outline)
+    local frame = Instance.new("Frame")
+    frame.Size = size
+    frame.Position = pos
+    frame.BackgroundColor3 = color
+    frame.BorderSizePixel = outline and 1 or 0
+    if outline then frame.BorderColor3 = Library.OutlineColor end
+    frame.Parent = parent
+    return frame
+end
+
+function Library:CreateWindow(title)
+    local MainFrame = CreateSharpFrame(ScreenGui, UDim2.fromOffset(600, 400), UDim2.new(0.5, -300, 0.5, -200), self.BackgroundColor, true)
+    
+    -- Sidebar
+    local Sidebar = CreateSharpFrame(MainFrame, UDim2.new(0, 100, 1, 0), UDim2.new(0, 0, 0, 0), self.MainColor, true)
+    local SidebarLayout = Instance.new("UIListLayout")
+    SidebarLayout.Parent = Sidebar
+    
+    local Title = Instance.new("TextLabel")
+    Title.Size = UDim2.new(1, 0, 0, 30)
+    Title.BackgroundTransparency = 1
+    Title.Text = title
+    Title.TextColor3 = self.AccentColor
+    Title.Font = self.Font
+    Title.TextSize = 14
+    Title.Parent = Sidebar
+
+    -- Content Area
+    local ContentArea = Instance.new("Frame")
+    ContentArea.Size = UDim2.new(1, -100, 1, 0)
+    ContentArea.Position = UDim2.new(0, 100, 0, 0)
+    ContentArea.BackgroundTransparency = 1
+    ContentArea.Parent = MainFrame
+
+    local WindowObj = { MainTabs = {} }
+
+    function WindowObj:CreateMainTab(name)
+        local MainTabButton = Instance.new("TextButton")
+        MainTabButton.Size = UDim2.new(1, 0, 0, 35)
+        MainTabButton.BackgroundColor3 = Library.MainColor
+        MainTabButton.Text = name
+        MainTabButton.TextColor3 = Library.TextColor
+        MainTabButton.Font = Library.Font
+        MainTabButton.Parent = Sidebar
+        
+        local MainTabFrame = Instance.new("Frame")
+        MainTabFrame.Size = UDim2.new(1, 0, 1, 0)
+        MainTabFrame.BackgroundTransparency = 1
+        MainTabFrame.Visible = false
+        MainTabFrame.Parent = ContentArea
+        
+        -- Sub-Tab Bar
+        local SubTabBar = CreateSharpFrame(MainTabFrame, UDim2.new(1, 0, 0, 25), UDim2.new(0, 0, 0, 0), Library.MainColor, true)
+        local SubTabLayout = Instance.new("UIListLayout")
+        SubTabLayout.FillDirection = Enum.FillDirection.Horizontal
+        SubTabLayout.Parent = SubTabBar
+        
+        local SubContentArea = Instance.new("Frame")
+        SubContentArea.Size = UDim2.new(1, 0, 1, -25)
+        SubContentArea.Position = UDim2.new(0, 0, 0, 25)
+        SubContentArea.BackgroundTransparency = 1
+        SubContentArea.Parent = MainTabFrame
+
+        local MainTabObj = { SubTabs = {} }
+
+        MainTabButton.MouseButton1Click:Connect(function()
+            for _, t in pairs(WindowObj.MainTabs) do t.Frame.Visible = false end
+            MainTabFrame.Visible = true
+        end)
+
+        function MainTabObj:CreateSubTab(subName)
+            local SubButton = Instance.new("TextButton")
+            SubButton.Size = UDim2.new(0, 80, 1, 0)
+            SubButton.BackgroundColor3 = Library.MainColor
+            SubButton.Text = subName
+            SubButton.TextColor3 = Library.TextColor
+            SubButton.Font = Library.Font
+            SubButton.Parent = SubTabBar
+            
+            local SubFrame = Instance.new("Frame")
+            SubFrame.Size = UDim2.new(1, 0, 1, 0)
+            SubFrame.BackgroundTransparency = 1
+            SubFrame.Visible = false
+            SubFrame.Parent = SubContentArea
+            
+            local Left = Instance.new("ScrollingFrame")
+            Left.Size = UDim2.new(0.5, -5, 1, 0)
+            Left.BackgroundTransparency = 1
+            Left.ScrollBarThickness = 0
+            Left.Parent = SubFrame
+            
+            local Right = Instance.new("ScrollingFrame")
+            Right.Size = UDim2.new(0.5, -5, 1, 0)
+            Right.Position = UDim2.new(0.5, 5, 0, 0)
+            Right.BackgroundTransparency = 1
+            Right.ScrollBarThickness = 0
+            Right.Parent = SubFrame
+
+            Instance.new("UIListLayout", Left).Padding = UDim.new(0, 10)
+            Instance.new("UIListLayout", Right).Padding = UDim.new(0, 10)
+
+            SubButton.MouseButton1Click:Connect(function()
+                for _, st in pairs(MainTabObj.SubTabs) do st.Frame.Visible = false end
+                SubFrame.Visible = true
+            end)
+
+            local SubTabObj = { Frame = SubFrame, Left = Left, Right = Right }
+            table.insert(MainTabObj.SubTabs, SubTabObj)
+            
+            function SubTabObj:CreateGroupbox(gName, side)
+                local parent = (side == "Right") and self.Right or self.Left
+                local Group = CreateSharpFrame(parent, UDim2.new(1, 0, 0, 30), UDim2.new(0, 0, 0, 0), Library.BackgroundColor, true)
+                Group.AutomaticSize = Enum.AutomaticSize.Y
+                CreateSharpFrame(Group, UDim2.new(1, 0, 0, 1), UDim2.new(0, 0, 0, 0), Library.AccentColor)
+                
+                local GTitle = Instance.new("TextLabel")
+                GTitle.Size = UDim2.new(1, 0, 0, 20)
+                GTitle.BackgroundTransparency = 1
+                GTitle.Text = gName
+                GTitle.TextColor3 = Library.TextColor
+                GTitle.Font = Library.Font
+                GTitle.Parent = Group
+                
+                local Container = Instance.new("Frame")
+                Container.Size = UDim2.new(1, -10, 0, 0)
+                Container.Position = UDim2.new(0, 5, 0, 25)
+                Container.BackgroundTransparency = 1
+                Container.AutomaticSize = Enum.AutomaticSize.Y
+                Container.Parent = Group
+                Instance.new("UIListLayout", Container).Padding = UDim.new(0, 5)
+
+                local GroupObj = {}
+
+                function GroupObj:CreateToggle(text, default, callback)
+                    local Toggle = Instance.new("TextButton")
+                    Toggle.Size = UDim2.new(1, 0, 0, 20)
+                    Toggle.BackgroundTransparency = 1
+                    Toggle.Text = ""
+                    Toggle.Parent = Container
+                    
+                    local Box = CreateSharpFrame(Toggle, UDim2.fromOffset(12, 12), UDim2.new(0, 0, 0.5, -6), Library.MainColor, true)
+                    local Fill = CreateSharpFrame(Box, UDim2.new(1, -2, 1, -2), UDim2.new(0, 1, 0, 1), Library.AccentColor)
+                    Fill.Visible = default
+                    
+                    local Label = Instance.new("TextLabel")
+                    Label.Size = UDim2.new(1, -20, 1, 0)
+                    Label.Position = UDim2.new(0, 20, 0, 0)
+                    Label.BackgroundTransparency = 1
+                    Label.Text = text
+                    Label.TextColor3 = Library.TextColor
+                    Label.Font = Library.Font
+                    Label.TextXAlignment = Enum.TextXAlignment.Left
+                    Label.Parent = Toggle
+                    
+                    local DepContainer = Instance.new("Frame")
+                    DepContainer.Size = UDim2.new(1, 0, 0, 0)
+                    DepContainer.BackgroundTransparency = 1
+                    DepContainer.AutomaticSize = Enum.AutomaticSize.Y
+                    DepContainer.Visible = default
+                    DepContainer.Parent = Container
+                    Instance.new("UIListLayout", DepContainer).Padding = UDim.new(0, 5)
+
+                    Toggle.MouseButton1Click:Connect(function()
+                        default = not default
+                        Fill.Visible = default
+                        DepContainer.Visible = default
+                        callback(default)
+                    end)
+                    
+                    return { Container = DepContainer }
+                end
+
+                function GroupObj:CreateDropdown(text, options, default, callback)
+                    local DropFrame = Instance.new("Frame")
+                    DropFrame.Size = UDim2.new(1, 0, 0, 35)
+                    DropFrame.BackgroundTransparency = 1
+                    DropFrame.Parent = Container
+                    
+                    local Label = Instance.new("TextLabel")
+                    Label.Size = UDim2.new(1, 0, 0, 15)
+                    Label.BackgroundTransparency = 1
+                    Label.Text = text
+                    Label.TextColor3 = Library.TextColor
+                    Label.Font = Library.Font
+                    Label.TextXAlignment = Enum.TextXAlignment.Left
+                    Label.Parent = DropFrame
+                    
+                    local Button = CreateSharpFrame(DropFrame, UDim2.new(1, 0, 0, 18), UDim2.new(0, 0, 0, 17), Library.MainColor, true)
+                    local BText = Instance.new("TextLabel")
+                    BText.Size = UDim2.new(1, -5, 1, 0)
+                    BText.Position = UDim2.new(0, 5, 0, 0)
+                    BText.BackgroundTransparency = 1
+                    BText.Text = default
+                    BText.TextColor3 = Library.TextColor
+                    BText.Font = Library.Font
+                    BText.TextXAlignment = Enum.TextXAlignment.Left
+                    BText.Parent = Button
+                end
+
+                return GroupObj
+            end
+            return SubTabObj
+        end
+        
+        table.insert(WindowObj.MainTabs, { Frame = MainTabFrame, Button = MainTabButton })
+        return MainTabObj
+    end
+    return WindowObj
+end
+
+return Library
