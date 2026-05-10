@@ -1,18 +1,12 @@
 --[[
-    VERTEX UI (Fixed & Optimized)
-    Design: Sharp Edges, Sidebar + Sub-Tabs
-    Fixes: Sidebar Overlap, Mobile Scaling, Alignment
-    Reconstructed by Manus
+    VERTEX V2 - PROFESSIONAL UI LIBRARY
+    Host this on GitHub to get your Raw Link
 ]]
 
 local UserInputService = game:GetService("UserInputService")
-local TweenService = game:GetService("TweenService")
-local RunService = game:GetService("RunService")
 local CoreGui = game:GetService("CoreGui")
 local Players = game:GetService("Players")
-
 local LocalPlayer = Players.LocalPlayer
-local Mouse = LocalPlayer:GetMouse()
 
 local Library = {
     MainColor = Color3.fromRGB(20, 20, 20),
@@ -24,7 +18,7 @@ local Library = {
 }
 
 local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "VertexUI"
+ScreenGui.Name = "VertexLibrary"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.Parent = CoreGui
 
@@ -40,10 +34,7 @@ local function CreateSharpFrame(parent, size, pos, color, outline)
 end
 
 function Library:CreateWindow(title)
-    -- Main Frame (Adjusted for Mobile Scaling)
     local MainFrame = CreateSharpFrame(ScreenGui, UDim2.fromOffset(580, 380), UDim2.new(0.5, -290, 0.5, -190), self.BackgroundColor, true)
-    
-    -- Sidebar (Wider to prevent overlap)
     local Sidebar = CreateSharpFrame(MainFrame, UDim2.new(0, 120, 1, 0), UDim2.new(0, 0, 0, 0), self.MainColor, true)
     
     local Title = Instance.new("TextLabel")
@@ -60,36 +51,13 @@ function Library:CreateWindow(title)
     SidebarContainer.Position = UDim2.new(0, 0, 0, 40)
     SidebarContainer.BackgroundTransparency = 1
     SidebarContainer.Parent = Sidebar
-    
-    local SidebarLayout = Instance.new("UIListLayout")
-    SidebarLayout.Padding = UDim.new(0, 2)
-    SidebarLayout.Parent = SidebarContainer
+    Instance.new("UIListLayout", SidebarContainer).Padding = UDim.new(0, 2)
 
-    -- Content Area
     local ContentArea = Instance.new("Frame")
     ContentArea.Size = UDim2.new(1, -120, 1, 0)
     ContentArea.Position = UDim2.new(0, 120, 0, 0)
     ContentArea.BackgroundTransparency = 1
     ContentArea.Parent = MainFrame
-
-    -- Mobile Dragging
-    local dragging, dragInput, dragStart, startPos
-    Sidebar.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-            dragStart = input.Position
-            startPos = MainFrame.Position
-            input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then dragging = false end
-            end)
-        end
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            local delta = input.Position - dragStart
-            MainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-        end
-    end)
 
     local WindowObj = { MainTabs = {} }
 
@@ -97,11 +65,9 @@ function Library:CreateWindow(title)
         local MainTabButton = Instance.new("TextButton")
         MainTabButton.Size = UDim2.new(1, 0, 0, 35)
         MainTabButton.BackgroundColor3 = Library.MainColor
-        MainTabButton.BorderSizePixel = 0
         MainTabButton.Text = name
         MainTabButton.TextColor3 = Library.TextColor
         MainTabButton.Font = Library.Font
-        MainTabButton.TextSize = 13
         MainTabButton.Parent = SidebarContainer
         
         local MainTabFrame = Instance.new("Frame")
@@ -110,12 +76,8 @@ function Library:CreateWindow(title)
         MainTabFrame.Visible = false
         MainTabFrame.Parent = ContentArea
         
-        -- Sub-Tab Bar
         local SubTabBar = CreateSharpFrame(MainTabFrame, UDim2.new(1, 0, 0, 30), UDim2.new(0, 0, 0, 0), Library.MainColor, true)
-        local SubTabLayout = Instance.new("UIListLayout")
-        SubTabLayout.FillDirection = Enum.FillDirection.Horizontal
-        SubTabLayout.Padding = UDim.new(0, 2)
-        SubTabLayout.Parent = SubTabBar
+        Instance.new("UIListLayout", SubTabBar).FillDirection = Enum.FillDirection.Horizontal
         
         local SubContentArea = Instance.new("Frame")
         SubContentArea.Size = UDim2.new(1, 0, 1, -30)
@@ -126,10 +88,7 @@ function Library:CreateWindow(title)
         local MainTabObj = { SubTabs = {} }
 
         MainTabButton.MouseButton1Click:Connect(function()
-            for _, t in pairs(WindowObj.MainTabs) do 
-                t.Frame.Visible = false 
-                t.Button.TextColor3 = Library.TextColor
-            end
+            for _, t in pairs(WindowObj.MainTabs) do t.Frame.Visible = false t.Button.TextColor3 = Library.TextColor end
             MainTabFrame.Visible = true
             MainTabButton.TextColor3 = Library.AccentColor
         end)
@@ -138,11 +97,9 @@ function Library:CreateWindow(title)
             local SubButton = Instance.new("TextButton")
             SubButton.Size = UDim2.new(0, 90, 1, 0)
             SubButton.BackgroundColor3 = Library.MainColor
-            SubButton.BorderSizePixel = 0
             SubButton.Text = subName
             SubButton.TextColor3 = Library.TextColor
             SubButton.Font = Library.Font
-            SubButton.TextSize = 13
             SubButton.Parent = SubTabBar
             
             local SubFrame = Instance.new("Frame")
@@ -169,10 +126,7 @@ function Library:CreateWindow(title)
             Instance.new("UIListLayout", Right).Padding = UDim.new(0, 10)
 
             SubButton.MouseButton1Click:Connect(function()
-                for _, st in pairs(MainTabObj.SubTabs) do 
-                    st.Frame.Visible = false 
-                    st.Button.TextColor3 = Library.TextColor
-                end
+                for _, st in pairs(MainTabObj.SubTabs) do st.Frame.Visible = false st.Button.TextColor3 = Library.TextColor end
                 SubFrame.Visible = true
                 SubButton.TextColor3 = Library.AccentColor
             end)
@@ -184,12 +138,10 @@ function Library:CreateWindow(title)
                 local parent = (side == "Right") and self.Right or self.Left
                 local Group = CreateSharpFrame(parent, UDim2.new(1, 0, 0, 30), UDim2.new(0, 0, 0, 0), Library.BackgroundColor, true)
                 Group.AutomaticSize = Enum.AutomaticSize.Y
-                
-                local AccentLine = CreateSharpFrame(Group, UDim2.new(1, 0, 0, 1), UDim2.new(0, 0, 0, 0), Library.AccentColor)
+                CreateSharpFrame(Group, UDim2.new(1, 0, 0, 1), UDim2.new(0, 0, 0, 0), Library.AccentColor)
                 
                 local GTitle = Instance.new("TextLabel")
                 GTitle.Size = UDim2.new(1, 0, 0, 20)
-                GTitle.Position = UDim2.new(0, 0, 0, 2)
                 GTitle.BackgroundTransparency = 1
                 GTitle.Text = gName
                 GTitle.TextColor3 = Library.TextColor
@@ -229,22 +181,11 @@ function Library:CreateWindow(title)
                     Label.TextXAlignment = Enum.TextXAlignment.Left
                     Label.Parent = Toggle
                     
-                    local DepContainer = Instance.new("Frame")
-                    DepContainer.Size = UDim2.new(1, 0, 0, 0)
-                    DepContainer.BackgroundTransparency = 1
-                    DepContainer.AutomaticSize = Enum.AutomaticSize.Y
-                    DepContainer.Visible = default
-                    DepContainer.Parent = Container
-                    Instance.new("UIListLayout", DepContainer).Padding = UDim.new(0, 5)
-
                     Toggle.MouseButton1Click:Connect(function()
                         default = not default
                         Fill.Visible = default
-                        DepContainer.Visible = default
                         callback(default)
                     end)
-                    
-                    return { Container = DepContainer }
                 end
 
                 return GroupObj
