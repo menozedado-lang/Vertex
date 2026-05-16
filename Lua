@@ -6,8 +6,8 @@
      ╚████╔╝ ╚██████╔╝██║██████╔╝    ╚██████╔╝╚██████╔╝██████╔╝
       ╚═══╝   ╚═════╝ ╚═╝╚═════╝      ╚═════╝  ╚═════╝ ╚═════╝ 
 
-    game utility exploit
-    reads the game's own module system against itself
+    game utility exploit — fixed build
+    no more broken UI / lobby / matchmaking
 ]]
 
 -- ─────────────────────────────────────────────────────────────
@@ -24,7 +24,7 @@ local LP   = Players.LocalPlayer
 local Char = LP.Character or LP.CharacterAdded:Wait()
 
 -- ─────────────────────────────────────────────────────────────
---  SAFE REQUIRE  —  never crashes the whole script
+--  SAFE WRAPPERS
 -- ─────────────────────────────────────────────────────────────
 local function safeRequire(path)
     local ok, result = pcall(require, path)
@@ -39,76 +39,33 @@ local function safePcall(fn, ...)
 end
 
 -- ─────────────────────────────────────────────────────────────
---  ACQUIRE THE GAME'S OWN MODULES VIA REQUIRE
---  We walk PlayerScripts to find the utility root
+--  MODULE ACQUISITION
 -- ─────────────────────────────────────────────────────────────
-local PlayerScripts   = LP:WaitForChild("PlayerScripts", 10)
-local PlayerModule    = PlayerScripts and PlayerScripts:FindFirstChild("PlayerModule")
-local UtilRoot        = PlayerScripts and PlayerScripts:FindFirstChild("Util")      -- common name
-    or PlayerScripts and PlayerScripts:FindFirstChild("Utilities")
-    or PlayerScripts and PlayerScripts:FindFirstChild("Utils")
+local PlayerScripts = LP:WaitForChild("PlayerScripts", 10)
+local PlayerModule  = PlayerScripts and PlayerScripts:FindFirstChild("PlayerModule")
 
--- Fallback: brute-search for a ModuleScript that has a "Character" child
--- (matches the second code block perfectly)
-if not UtilRoot then
+-- find the Util root — look for a ModuleScript that has
+-- Character + Player + Game as children (matches code block 2)
+local UtilRoot = nil
+if PlayerScripts then
     for _, obj in ipairs(PlayerScripts:GetDescendants()) do
-        if obj:IsA("ModuleScript") and obj:FindFirstChild("Character")
-           and obj:FindFirstChild("Player") and obj:FindFirstChild("Game") then
+        if obj:IsA("ModuleScript")
+           and obj:FindFirstChild("Character")
+           and obj:FindFirstChild("Player")
+           and obj:FindFirstChild("Game") then
             UtilRoot = obj
             break
         end
     end
 end
 
--- ─────────────────────────────────────────────────────────────
---  REQUIRE THE UTILITY LIBRARY  (the second code block)
--- ─────────────────────────────────────────────────────────────
 local Util = UtilRoot and safeRequire(UtilRoot) or {}
 
---[[
-    Util now contains:
-    .Player     .Character  .Task       .Game
-    .Weld       .Attribute  .Number     .CFrame
-    .Raycast    .Fusion     .Team       .Table
-    .VFX        .Error      .Geographic .Vector
-    .Tags       .Common     .Input
-]]
-
--- ─────────────────────────────────────────────────────────────
---  REQUIRE THE PLAYER MODULE  (the first code block)
---  Gives us CameraModule + ControlModule handles
--- ─────────────────────────────────────────────────────────────
 local PM       = PlayerModule and safeRequire(PlayerModule)
 local Cameras  = PM and PM:GetCameras()
 local Controls = PM and PM:GetControls()
 
--- ─────────────────────────────────────────────────────────────
---  DUMP HELPER  —  prints every key/value of a module table
--- ─────────────────────────────────────────────────────────────
-local function dumpModule(name, tbl)
-    if type(tbl) ~= "table" then
-        print("[dump] " .. name .. " = " .. tostring(tbl))
-        return
-    end
-    print("[dump] ── " .. name .. " ──────────────────────")
-    for k, v in pairs(tbl) do
-        print(string.format("  %-24s = %s (%s)", tostring(k), tostring(v), type(v)))
-        -- one level deep into nested tables
-        if type(v) == "table" then
-            for k2, v2 in pairs(v) do
-                print(string.format("      %-20s = %s", tostring(k2), tostring(v2)))
-            end
-        end
-    end
-end
-
--- ─────────────────────────────────────────────────────────────
---  EXTRACT USEFUL GAME INTERNALS
--- ─────────────────────────────────────────────────────────────
-
--- ── Util.Character  ──────────────────────────────────────────
--- The game uses this to manage character state.
--- We hook its functions to manipulate health, speed, etc.
+-- sub-modules
 local UtilCharacter = Util.Character
 local UtilPlayer    = Util.Player
 local UtilGame      = Util.Game
@@ -121,220 +78,253 @@ local UtilRaycast   = Util.Raycast
 local UtilCFrame    = Util.CFrame
 local UtilCommon    = Util.Common
 local UtilTags      = Util.Tags
+local UtilVFX       = Util.VFX
 
 -- ─────────────────────────────────────────────────────────────
---  CENTRAL EXPLOIT STATE
+--  DUMP HELPER  (console only, never blocks anything)
+-- ─────────────────────────────────────────────────────────────
+local function dumpModule(name, tbl)
+    if type(tbl) ~= "table" then return end
+    print("[dump] ── " .. name .. " ──────────")
+    for k, v in pairs(tbl) do
+        print(string.format("  %-22s = %s (%s)", tostring(k), tostring(v), type(v)))
+    end
+end
+
+-- dump on load so we can read module internals in console
+-- these never affect gameplay — read only
+task.spawn(function()
+    task.wait(2)  -- wait so game finishes loading first
+    dumpModule("Util.Character", UtilCharacter)
+    dumpModule("Util.Game",      UtilGame)
+    dumpModule("Util.Input",     UtilInput)
+    dumpModule("Util.Common",    UtilCommon)
+    dumpModule("Util.Attribute", UtilAttribute)
+    dumpModule("Util.Raycast",   UtilRaycast)
+    dumpModule("Util.Team",      UtilTeam)
+    if Cameras  then dumpModule("CameraModule", Cameras)  end
+    if Controls then dumpModule("ControlModule", Controls) end
+end)
+
+-- ─────────────────────────────────────────────────────────────
+--  CENTRAL STATE
 -- ─────────────────────────────────────────────────────────────
 local State = {
-    -- toggles
-    GodMode          = false,
-    InfiniteAmmo     = false,
-    SpeedHack        = false,
-    NoReload         = false,
-    AimAssist        = false,
-    VoidEnemies      = false,
-    NoClip           = false,
-    AntiAC           = false,
-    CameraLock       = false,
-    AutoShoot        = false,
+    -- feature flags
+    GodMode         = false,
+    SpeedHack       = false,
+    NoClip          = false,
+    InfiniteAmmo    = false,
+    NoReload        = false,
+    CameraLock      = false,
+    AutoShoot       = false,
+    VoidEnemies     = false,
+    AntiAC          = false,
+    RemoteSpy       = false,   -- spy is OFF by default now
 
     -- values
-    SpeedMultiplier  = 2.0,
-    AimFOV           = 200,
+    SpeedMultiplier = 2,
+    AimFOV          = 200,
 
-    -- runtime
-    connections      = {},
-    hookedFunctions  = {},
-    originalValues   = {},
-    camLockConn      = nil,
-    godConn          = nil,
-    speedConn        = nil,
-    noclipConn       = nil,
+    -- runtime handles
+    godConn         = nil,
+    speedConn       = nil,
+    noclipConn      = nil,
+    voidConn        = nil,
+    camLockConn     = nil,
+    autoShootConn   = nil,
+    hookedFunctions = {},
+    originalValues  = {},
 }
 
 -- ─────────────────────────────────────────────────────────────
---  MODULE RAWSET EXPLOITS
---  We rawset directly into the game's own module tables
---  bypassing any __newindex protection
+--  METATABLE HOOK
+--  KEY FIX: the old version blocked damage/reload remotes
+--  unconditionally. Now NOTHING is blocked unless the specific
+--  toggle is ON, and we use a whitelist approach — only known
+--  bad patterns are touched. Everything else passes through.
 -- ─────────────────────────────────────────────────────────────
-local function patchCharacterModule()
-    if not UtilCharacter then return end
-    safePcall(function()
-        -- dump first so we know what keys exist
-        dumpModule("Util.Character", UtilCharacter)
-
-        -- common keys found in character utility modules:
-        local patchTargets = {
-            "MaxHealth", "Health", "WalkSpeed", "JumpPower",
-            "ReloadTime", "FireRate", "Damage", "MaxAmmo",
-            "BulletSpeed", "SpreadAngle", "Range",
-        }
-        for _, key in ipairs(patchTargets) do
-            if UtilCharacter[key] ~= nil then
-                State.originalValues["Character_"..key] = UtilCharacter[key]
-                print("[exploit] found Character." .. key .. " = " .. tostring(UtilCharacter[key]))
-            end
-        end
-    end)
-end
-
-local function patchGameModule()
-    if not UtilGame then return end
-    safePcall(function()
-        dumpModule("Util.Game", UtilGame)
-    end)
-end
-
-local function patchInputModule()
-    if not UtilInput then return end
-    safePcall(function()
-        dumpModule("Util.Input", UtilInput)
-    end)
-end
-
--- Run initial dumps to expose module internals in console
-patchCharacterModule()
-patchGameModule()
-patchInputModule()
-
--- ─────────────────────────────────────────────────────────────
---  HOOKFUNCTION ON MODULE FUNCTIONS
--- ─────────────────────────────────────────────────────────────
-local function hookModuleFunction(tbl, key, replacement)
-    if not tbl or type(tbl[key]) ~= "function" then return false end
-    local ok, err = pcall(function()
-        State.hookedFunctions[key] = hookfunction(tbl[key], replacement)
-    end)
-    if ok then
-        print("[exploit] hooked " .. key)
-        return true
-    end
-    warn("[exploit] hookfunction failed on " .. key .. ": " .. tostring(err))
-    return false
-end
-
--- ─────────────────────────────────────────────────────────────
---  METATABLE HOOK  (namecall spy + modifier)
--- ─────────────────────────────────────────────────────────────
-local mt       = getrawmetatable(game)
-local oldNC    = mt.__namecall
-local oldIndex = mt.__index
+local mt    = getrawmetatable(game)
+local oldNC = mt.__namecall
+local oldNI = mt.__index
 setreadonly(mt, false)
 
--- Remote spy — logs all FireServer/InvokeServer calls
--- so we can learn the game's remote schema
-local remoteLog = {}
+-- remote spy log (only prints when State.RemoteSpy = true)
+local spyLog = {}
 
 mt.__namecall = newcclosure(function(self, ...)
     local method = getnamecallmethod()
     local args   = {...}
 
-    -- ── Remote spy ────────────────────────────────────────
-    if method == "FireServer" or method == "InvokeServer" then
-        local path = self:GetFullName()
-        if not remoteLog[path] then
-            remoteLog[path] = true
-            print(string.format("[SPY] %s::%s(%s)",
-                path, method,
-                table.concat(
-                    (function()
-                        local s = {}
-                        for _, a in ipairs(args) do
-                            table.insert(s, tostring(a))
-                        end
-                        return s
-                    end)(),
-                    ", "
-                )
-            ))
-        end
-    end
-
-    -- ── God mode: block damage remotes ───────────────────
-    if State.GodMode and method == "FireServer" then
-        local n = self.Name:lower()
-        if n:find("damage") or n:find("hurt") or n:find("kill")
-           or n:find("health") or n:find("hit") then
-            return  -- silently drop
-        end
-    end
-
-    -- ── Infinite ammo: intercept reload remotes ───────────
-    if State.InfiniteAmmo and method == "FireServer" then
-        local n = self.Name:lower()
-        if n:find("reload") or n:find("ammo") or n:find("magazine") then
-            return  -- block server reload validation
-        end
-    end
-
-    return oldNC(self, ...)
-end)
-
--- ── __index hook — lie to AC about WalkSpeed / Health ─────
-mt.__index = newcclosure(function(self, key)
-    if State.AntiAC then
-        local lpChar = LP.Character
-        if lpChar then
-            local hum = lpChar:FindFirstChildOfClass("Humanoid")
-            if hum then
-                if self == hum then
-                    if key == "WalkSpeed"  then return 16  end  -- lie: show normal speed
-                    if key == "JumpPower"  then return 50  end
-                end
-                if self == lpChar:FindFirstChild("HumanoidRootPart") then
-                    if key == "Position" then
-                        -- return last safe position if we are in void
-                        return oldIndex(self, key)
-                    end
+    -- ── Remote Spy (opt-in, off by default) ──────────────
+    if State.RemoteSpy then
+        if method == "FireServer" or method == "InvokeServer"
+           or method == "FireAllClients" then
+            local path = self:GetFullName()
+            if not spyLog[path] then
+                spyLog[path] = true
+                print(string.format("[SPY] %s :: %s", path, method))
+                for i, a in ipairs(args) do
+                    print(string.format("  arg[%d] = %s (%s)", i, tostring(a), type(a)))
                 end
             end
         end
     end
-    return oldIndex(self, key)
+
+    --[[
+        IMPORTANT: we do NOT block any remotes here anymore.
+        The old code blocked "damage","hurt","kill","reload","ammo"
+        which also caught matchmaking, lobby, queue and UI remotes
+        that contained those words in their name.
+
+        Blocking is done per-feature ONLY when:
+          - The feature is ON
+          - We are 100% sure the remote is a damage/hit confirmation
+            sent FROM server TO client (which cannot be blocked anyway)
+            or a client-to-server hit report we want to suppress.
+
+        For now the hook is purely a spy + future hook point.
+        Features work via Heartbeat loops and rawset, not remote blocking.
+    ]]
+
+    return oldNC(self, ...)
+end)
+
+-- __index hook: only lies when AntiAC is ON
+-- and only about the exact properties the AC reads
+mt.__index = newcclosure(function(self, key)
+    if State.AntiAC then
+        local chr = LP.Character
+        if chr then
+            local hum = chr:FindFirstChildOfClass("Humanoid")
+            if hum and self == hum then
+                -- lie to anti-cheat property polls
+                if key == "WalkSpeed" then return 16 end
+                if key == "JumpPower" then return 50 end
+            end
+        end
+    end
+    return oldNI(self, key)
 end)
 
 setreadonly(mt, true)
 
 -- ─────────────────────────────────────────────────────────────
---  FEATURE IMPLEMENTATIONS
+--  HOOKFUNCTION HELPER
+-- ─────────────────────────────────────────────────────────────
+local function hookModFn(tbl, key, replacement)
+    if not tbl or type(tbl[key]) ~= "function" then return false end
+    local ok, err = pcall(function()
+        State.hookedFunctions[key] = hookfunction(tbl[key], replacement)
+    end)
+    if ok then
+        print("[exploit] hooked fn: " .. key)
+        return true
+    end
+    warn("[exploit] hookfunction failed (" .. key .. "): " .. tostring(err))
+    return false
+end
+
+-- ─────────────────────────────────────────────────────────────
+--  HELPERS
+-- ─────────────────────────────────────────────────────────────
+local Camera = workspace.CurrentCamera
+
+local function getLpRoot()
+    local chr = LP.Character
+    return chr and chr:FindFirstChild("HumanoidRootPart")
+end
+
+local function getLpHum()
+    local chr = LP.Character
+    return chr and chr:FindFirstChildOfClass("Humanoid")
+end
+
+local function getNearestEnemy()
+    local cam    = Camera
+    local vp     = cam.ViewportSize
+    local center = Vector2.new(vp.X / 2, vp.Y / 2)
+    local best, bestDist = nil, math.huge
+
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then
+            local pChr = p.Character
+            local head = pChr and pChr:FindFirstChild("Head")
+            local phum = pChr and pChr:FindFirstChildOfClass("Humanoid")
+            if head and phum and phum.Health > 0 then
+                local sp, onScreen = cam:WorldToScreenPoint(head.Position)
+                if onScreen then
+                    local dist = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+                    if dist < State.AimFOV and dist < bestDist then
+                        bestDist = dist
+                        best     = p
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+-- ─────────────────────────────────────────────────────────────
+--  FEATURES
 -- ─────────────────────────────────────────────────────────────
 
 -- ── GOD MODE ─────────────────────────────────────────────────
+-- Only resets health locally. Does NOT block remotes.
+-- Real god mode in most games requires server-side work,
+-- but health loop + Attribute hook covers client-authoritative games.
 local function startGodMode()
     State.godConn = RunService.Heartbeat:Connect(function()
         safePcall(function()
-            local chr = LP.Character
-            local hum = chr and chr:FindFirstChildOfClass("Humanoid")
-            if hum and hum.Health < hum.MaxHealth then
+            local hum = getLpHum()
+            if hum and hum.Health > 0 and hum.Health < hum.MaxHealth then
                 hum.Health = hum.MaxHealth
-            end
-            -- also patch via UtilCharacter if it exposes a SetHealth
-            if UtilCharacter and type(UtilCharacter.SetHealth) == "function" then
-                safePcall(function() UtilCharacter.SetHealth(chr, hum.MaxHealth) end)
             end
         end)
     end)
+
+    -- hook Util.Attribute.Set to intercept health writes on our character
+    if UtilAttribute then
+        hookModFn(UtilAttribute, "Set", function(instance, key, value, ...)
+            local orig = State.hookedFunctions["Set"]
+            local chr  = LP.Character
+            if chr and instance == chr then
+                local kl = tostring(key):lower()
+                if kl == "health" or kl == "currenthealth" then
+                    return orig(instance, key, chr:FindFirstChildOfClass("Humanoid") and
+                        chr:FindFirstChildOfClass("Humanoid").MaxHealth or value, ...)
+                end
+            end
+            return orig(instance, key, value, ...)
+        end)
+    end
 end
 
 local function stopGodMode()
     if State.godConn then State.godConn:Disconnect() State.godConn = nil end
+    -- restore hookfunction if we hooked Set
+    if State.hookedFunctions["Set"] and UtilAttribute then
+        safePcall(function()
+            hookfunction(UtilAttribute.Set, State.hookedFunctions["Set"])
+            State.hookedFunctions["Set"] = nil
+        end)
+    end
 end
 
 -- ── SPEED HACK ───────────────────────────────────────────────
 local function startSpeedHack()
     State.speedConn = RunService.Heartbeat:Connect(function()
         safePcall(function()
-            local chr = LP.Character
-            local hum = chr and chr:FindFirstChildOfClass("Humanoid")
+            local hum = getLpHum()
             if hum then
                 local target = 16 * State.SpeedMultiplier
-                if hum.WalkSpeed ~= target then
-                    hum.WalkSpeed = target
-                end
-                -- try to patch via UtilCharacter
+                hum.WalkSpeed = target
+                -- rawset into UtilCharacter if it caches base speed
                 if UtilCharacter then
                     rawset(UtilCharacter, "WalkSpeed", target)
                     rawset(UtilCharacter, "BaseSpeed",  target)
+                    rawset(UtilCharacter, "MoveSpeed",  target)
                 end
             end
         end)
@@ -344,59 +334,116 @@ end
 local function stopSpeedHack()
     if State.speedConn then State.speedConn:Disconnect() State.speedConn = nil end
     safePcall(function()
-        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        local hum = getLpHum()
         if hum then hum.WalkSpeed = 16 end
+        if UtilCharacter then
+            rawset(UtilCharacter, "WalkSpeed", 16)
+            rawset(UtilCharacter, "BaseSpeed",  16)
+            rawset(UtilCharacter, "MoveSpeed",  16)
+        end
     end)
 end
 
+-- ── NO CLIP ──────────────────────────────────────────────────
+local function startNoClip()
+    State.noclipConn = RunService.Stepped:Connect(function()
+        safePcall(function()
+            local chr = LP.Character
+            if not chr then return end
+            for _, p in ipairs(chr:GetDescendants()) do
+                if p:IsA("BasePart") then
+                    p.CanCollide = false
+                end
+            end
+        end)
+    end)
+end
+
+local function stopNoClip()
+    if State.noclipConn then State.noclipConn:Disconnect() State.noclipConn = nil end
+end
+
 -- ── INFINITE AMMO / NO RELOAD ────────────────────────────────
---  rawset into every item/weapon table we can find
+--  rawset into every weapon/item library table we can find.
+--  Does NOT touch remotes at all.
 local function patchWeaponTables()
     safePcall(function()
-        -- try common paths the game's Item/Weapon module might use
-        local paths = {
-            {"ReplicatedStorage", "Modules", "ItemLibrary"},
-            {"ReplicatedStorage", "Modules", "WeaponLibrary"},
-            {"ReplicatedStorage", "Shared",  "Items"},
-            {"ReplicatedStorage", "Data",    "Weapons"},
-        }
-        for _, pathArr in ipairs(paths) do
-            local cur = game
-            for _, seg in ipairs(pathArr) do
-                cur = cur:FindFirstChild(seg)
-                if not cur then break end
+        -- common module paths to try
+        local candidates = {}
+        for _, obj in ipairs(ReplicatedStorage:GetDescendants()) do
+            if obj:IsA("ModuleScript") then
+                local nl = obj.Name:lower()
+                if nl:find("item") or nl:find("weapon")
+                   or nl:find("gun") or nl:find("loadout") then
+                    table.insert(candidates, obj)
+                end
             end
-            if cur and cur:IsA("ModuleScript") then
-                local lib = safeRequire(cur)
-                if type(lib) == "table" then
-                    dumpModule(table.concat(pathArr, "."), lib)
-                    -- rawset fire-rate / reload on every sub-table
-                    for _, item in pairs(lib) do
-                        if type(item) == "table" then
-                            for _, key in ipairs({
-                                "ReloadLength","ReloadTime","FireRate",
-                                "Ammo","MaxAmmo","Magazine","MaxMagazine",
-                                "CoolDown","Cooldown","Delay",
-                            }) do
-                                if item[key] ~= nil then
-                                    State.originalValues[tostring(item.Name or "?") .. "_" .. key] = item[key]
-                                    if State.NoReload then
-                                        rawset(item, key, key:find("Ammo") and 9999 or 0)
-                                    end
-                                end
-                            end
-                        end
-                    end
+        end
+        for _, obj in ipairs(PlayerScripts:GetDescendants()) do
+            if obj:IsA("ModuleScript") then
+                local nl = obj.Name:lower()
+                if nl:find("item") or nl:find("weapon")
+                   or nl:find("gun") or nl:find("loadout") then
+                    table.insert(candidates, obj)
                 end
             end
         end
 
-        -- Also patch via the Util modules we already required
-        if UtilCommon then
-            rawset(UtilCommon, "ReloadTime",  0)
-            rawset(UtilCommon, "FireRate",     0.001)
-            rawset(UtilCommon, "MaxAmmo",      9999)
-            rawset(UtilCommon, "Ammo",         9999)
+        for _, mod in ipairs(candidates) do
+            local lib = safeRequire(mod)
+            if type(lib) == "table" then
+                print("[exploit] patching: " .. mod:GetFullName())
+                local function patchTable(t, depth)
+                    if depth > 4 then return end
+                    for _, item in pairs(t) do
+                        if type(item) == "table" then
+                            local targets = {
+                                ReloadLength  = State.NoReload    and 0    or nil,
+                                ReloadTime    = State.NoReload    and 0    or nil,
+                                FireRate      = State.NoReload    and 0.001 or nil,
+                                CoolDown      = State.NoReload    and 0    or nil,
+                                Cooldown      = State.NoReload    and 0    or nil,
+                                Delay         = State.NoReload    and 0    or nil,
+                                Ammo          = State.InfiniteAmmo and 9999 or nil,
+                                MaxAmmo       = State.InfiniteAmmo and 9999 or nil,
+                                Magazine      = State.InfiniteAmmo and 9999 or nil,
+                                MaxMagazine   = State.InfiniteAmmo and 9999 or nil,
+                                StoredAmmo    = State.InfiniteAmmo and 9999 or nil,
+                            }
+                            for k, v in pairs(targets) do
+                                if item[k] ~= nil and v ~= nil then
+                                    if not State.originalValues[tostring(item.Name or "?").."_"..k] then
+                                        State.originalValues[tostring(item.Name or "?").."_"..k] = item[k]
+                                    end
+                                    rawset(item, k, v)
+                                    print(string.format("  [rawset] %s.%s = %s",
+                                        tostring(item.Name or "?"), k, tostring(v)))
+                                end
+                            end
+                            patchTable(item, depth + 1)
+                        end
+                    end
+                end
+                patchTable(lib, 0)
+            end
+        end
+
+        -- also patch directly via Util modules
+        local utilTargets = {UtilCommon, UtilCharacter}
+        for _, ut in ipairs(utilTargets) do
+            if ut then
+                if State.NoReload then
+                    rawset(ut, "ReloadTime",   0)
+                    rawset(ut, "ReloadLength",  0)
+                    rawset(ut, "FireRate",       0.001)
+                    rawset(ut, "Cooldown",       0)
+                end
+                if State.InfiniteAmmo then
+                    rawset(ut, "MaxAmmo",  9999)
+                    rawset(ut, "Ammo",     9999)
+                    rawset(ut, "Magazine", 9999)
+                end
+            end
         end
     end)
 end
@@ -409,7 +456,8 @@ local function startVoidEnemies()
         safePcall(function()
             for _, p in ipairs(Players:GetPlayers()) do
                 if p ~= LP then
-                    local hrp = p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+                    local hrp = p.Character and
+                                p.Character:FindFirstChild("HumanoidRootPart")
                     if hrp then
                         hrp.CFrame = VOID_CF
                         hrp.AssemblyLinearVelocity  = Vector3.zero
@@ -425,60 +473,11 @@ local function stopVoidEnemies()
     if State.voidConn then State.voidConn:Disconnect() State.voidConn = nil end
 end
 
--- ── NO CLIP ──────────────────────────────────────────────────
-local function startNoClip()
-    State.noclipConn = RunService.Stepped:Connect(function()
-        safePcall(function()
-            local chr = LP.Character
-            if not chr then return end
-            for _, part in ipairs(chr:GetDescendants()) do
-                if part:IsA("BasePart") and part.Name ~= "HumanoidRootPart" then
-                    part.CanCollide = false
-                end
-            end
-        end)
-    end)
-end
-
-local function stopNoClip()
-    if State.noclipConn then State.noclipConn:Disconnect() State.noclipConn = nil end
-end
-
--- ── CAMERA LOCK (aim assist) ─────────────────────────────────
-local Camera = workspace.CurrentCamera
-
-local function getNearestEnemy()
-    local chr   = LP.Character
-    local hrp   = chr and chr:FindFirstChild("HumanoidRootPart")
-    if not hrp  then return nil end
-    local cam   = Camera
-    local vp    = cam.ViewportSize
-    local center = Vector2.new(vp.X/2, vp.Y/2)
-    local best, bestDist = nil, math.huge
-
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LP then
-            local pChr = p.Character
-            local head = pChr and pChr:FindFirstChild("Head")
-            local phum = pChr and pChr:FindFirstChildOfClass("Humanoid")
-            if head and phum and phum.Health > 0 then
-                local screenPos, onScreen = cam:WorldToScreenPoint(head.Position)
-                if onScreen then
-                    local dist = (Vector2.new(screenPos.X, screenPos.Y) - center).Magnitude
-                    if dist < State.AimFOV and dist < bestDist then
-                        bestDist = dist
-                        best     = p
-                    end
-                end
-            end
-        end
-    end
-    return best
-end
-
+-- ── CAMERA LOCK ──────────────────────────────────────────────
 local function startCameraLock()
     State.camLockConn = RunService.RenderStepped:Connect(function()
         safePcall(function()
+            if not State.CameraLock then return end
             local target = getNearestEnemy()
             if not target then return end
             local head = target.Character and target.Character:FindFirstChild("Head")
@@ -497,228 +496,128 @@ end
 local function startAutoShoot()
     State.autoShootConn = RunService.Heartbeat:Connect(function()
         safePcall(function()
-            local chr  = LP.Character
-            local tool = chr and chr:FindFirstChildOfClass("Tool")
-            if not tool then return end
-            -- only fire if we have a camera-locked target
             if not State.CameraLock then return end
             local target = getNearestEnemy()
             if not target then return end
-            -- fire every shoot remote in the tool
+            local chr  = LP.Character
+            local tool = chr and chr:FindFirstChildOfClass("Tool")
+            if not tool then return end
+            tool:Activate()
             for _, v in ipairs(tool:GetDescendants()) do
                 if v:IsA("RemoteEvent") then
-                    local n = v.Name:lower()
-                    if n:find("shoot") or n:find("fire") or n:find("attack") then
+                    local nl = v.Name:lower()
+                    if nl:find("shoot") or nl:find("fire") or nl:find("attack") then
                         safePcall(function() v:FireServer() end)
                     end
                 end
             end
-            tool:Activate()
         end)
     end)
 end
 
 local function stopAutoShoot()
-    if State.autoShootConn then State.autoShootConn:Disconnect() State.autoShootConn = nil end
+    if State.autoShootConn then
+        State.autoShootConn:Disconnect()
+        State.autoShootConn = nil
+    end
 end
 
--- ── CONTROL MODULE EXPLOIT ───────────────────────────────────
---  The PlayerModule exposes GetControls() — we abuse it to
---  override movement direction or disable certain inputs
-local function exploitControls()
-    if not Controls then return end
-    safePcall(function()
-        dumpModule("ControlModule", Controls)
-        -- disable click-to-move so it can't interfere
-        local ctm = PM and PM:GetClickToMoveController()
-        if ctm then
-            for k, v in pairs(ctm) do
-                print("[ClickToMove] " .. tostring(k) .. " = " .. tostring(v))
-            end
-        end
-    end)
-end
-
-exploitControls()
-
--- ── CAMERA MODULE EXPLOIT ────────────────────────────────────
-local function exploitCameras()
-    if not Cameras then return end
-    safePcall(function()
-        dumpModule("CameraModule", Cameras)
-        -- try to hook the camera update function
-        for k, v in pairs(Cameras) do
-            if type(v) == "function" and
-               (k:lower():find("update") or k:lower():find("step")) then
-                hookModuleFunction(Cameras, k, function(...)
-                    -- call original but then snap camera to target if lock is on
-                    local result = State.hookedFunctions[k](...)
-                    if State.CameraLock then
-                        local target = getNearestEnemy()
-                        if target then
-                            local head = target.Character and target.Character:FindFirstChild("Head")
-                            if head then
-                                Camera.CFrame = CFrame.new(Camera.CFrame.Position, head.Position)
-                            end
-                        end
-                    end
-                    return result
-                end)
-            end
-        end
-    end)
-end
-
-exploitCameras()
-
--- ── UTIL.RAYCAST EXPLOIT ─────────────────────────────────────
---  The game uses Util.Raycast for hit detection — we hook it
---  to always return a hit on the nearest enemy
-local function exploitRaycast()
+-- ── RAYCAST HOOK ─────────────────────────────────────────────
+--  Hooks Util.Raycast cast function to redirect missed shots
+--  Only applied when CameraLock is ON
+local function applyRaycastHook()
     if not UtilRaycast then return end
     safePcall(function()
-        dumpModule("Util.Raycast", UtilRaycast)
-
-        -- find the cast function
-        local castKey = nil
         for k, v in pairs(UtilRaycast) do
             if type(v) == "function" then
                 local kl = k:lower()
                 if kl:find("cast") or kl:find("shoot") or kl:find("fire") then
-                    castKey = k
+                    hookModFn(UtilRaycast, k, function(...)
+                        local orig   = State.hookedFunctions[k]
+                        local result = orig(...)
+                        -- only fabricate if camera lock is on and real cast missed
+                        if State.CameraLock and (not result or not result.Instance) then
+                            local target = getNearestEnemy()
+                            if target then
+                                local head = target.Character and
+                                             target.Character:FindFirstChild("Head")
+                                if head then
+                                    return {
+                                        Instance = head,
+                                        Position = head.Position,
+                                        Normal   = Vector3.new(0, 1, 0),
+                                        Material = Enum.Material.SmoothPlastic,
+                                    }
+                                end
+                            end
+                        end
+                        return result
+                    end)
+                    print("[exploit] Raycast hook applied on: " .. k)
                     break
                 end
             end
         end
-
-        if castKey then
-            hookModuleFunction(UtilRaycast, castKey, function(...)
-                local original = State.hookedFunctions[castKey]
-                local result   = original(...)
-                -- if no hit, fabricate one toward nearest enemy head
-                if not result or not result.Instance then
-                    local target = getNearestEnemy()
-                    if target then
-                        local head = target.Character and target.Character:FindFirstChild("Head")
-                        if head then
-                            return {
-                                Instance = head,
-                                Position = head.Position,
-                                Normal   = Vector3.new(0,1,0),
-                                Material = Enum.Material.SmoothPlastic,
-                            }
-                        end
-                    end
-                end
-                return result
-            end)
-            print("[exploit] Util.Raycast." .. castKey .. " hooked — always returns enemy head")
-        end
     end)
 end
 
-exploitRaycast()
+applyRaycastHook()
 
--- ── UTIL.ATTRIBUTE EXPLOIT ───────────────────────────────────
---  Games use Attribute modules to read/set instance attributes
---  We hook it to intercept attribute reads/writes
-local function exploitAttribute()
-    if not UtilAttribute then return end
-    safePcall(function()
-        dumpModule("Util.Attribute", UtilAttribute)
-
-        -- hook Set to intercept health / damage attribute writes
-        hookModuleFunction(UtilAttribute, "Set", function(instance, key, value)
-            local kl = tostring(key):lower()
-            if State.GodMode then
-                if kl == "health" then value = 999999 end
-                if kl == "damage" and instance ~= LP.Character then
-                    -- block damage sets on our own character
-                    if instance == LP.Character then return end
-                end
-            end
-            if State.InfiniteAmmo then
-                if kl == "ammo" or kl == "magazine" then value = 9999 end
-                if kl == "reloadtime" or kl == "cooldown" then value = 0 end
-            end
-            return State.hookedFunctions["Set"](instance, key, value)
-        end)
-
-        -- hook Get to lie about health to AC
-        hookModuleFunction(UtilAttribute, "Get", function(instance, key)
-            local kl   = tostring(key):lower()
-            local orig = State.hookedFunctions["Get"]
-            if State.AntiAC and instance == LP.Character then
-                if kl == "walkspeed" then return 16   end
-                if kl == "health"    then return 100  end
-            end
-            return orig(instance, key)
-        end)
-    end)
-end
-
-exploitAttribute()
-
--- ── UTIL.TEAM EXPLOIT ────────────────────────────────────────
---  Hook team checks so we appear on both teams simultaneously
-local function exploitTeam()
+-- ── TEAM HOOK ────────────────────────────────────────────────
+--  Only applied once, does not block any game flow
+local function applyTeamHook()
     if not UtilTeam then return end
     safePcall(function()
-        dumpModule("Util.Team", UtilTeam)
-
-        hookModuleFunction(UtilTeam, "IsEnemy", function(p1, p2)
-            -- make everyone think we are their ally
-            -- so friendly fire protections do not apply to us
+        hookModFn(UtilTeam, "IsEnemy", function(p1, p2, ...)
             if p1 == LP or p2 == LP then return false end
-            return State.hookedFunctions["IsEnemy"](p1, p2)
+            return State.hookedFunctions["IsEnemy"](p1, p2, ...)
         end)
-
-        hookModuleFunction(UtilTeam, "IsFriendly", function(p1, p2)
+        hookModFn(UtilTeam, "IsFriendly", function(p1, p2, ...)
             if p1 == LP or p2 == LP then return true end
-            return State.hookedFunctions["IsFriendly"](p1, p2)
+            return State.hookedFunctions["IsFriendly"](p1, p2, ...)
         end)
     end)
 end
 
-exploitTeam()
+applyTeamHook()
 
--- ── UTIL.VFX EXPLOIT ─────────────────────────────────────────
---  Hook VFX to disable all particle effects on enemies
---  so they are easier to see and track
-local function exploitVFX()
-    if not UtilVFX then return end
-    safePcall(function()
-        dumpModule("Util.VFX", Util.VFX)
+-- ── FEATURE DISPATCH ─────────────────────────────────────────
+local function applyFeature(key, value)
+    if key == "GodMode" then
+        if value then startGodMode()   else stopGodMode()   end
 
-        hookModuleFunction(Util.VFX, "Play", function(...)
-            -- just drop enemy VFX calls silently
-            -- keeps the screen clean for us
-        end)
+    elseif key == "SpeedHack" then
+        if value then startSpeedHack() else stopSpeedHack() end
 
-        hookModuleFunction(Util.VFX, "Create", function(...)
-            local orig = State.hookedFunctions["Create"]
-            return orig(...)
-        end)
-    end)
-end
+    elseif key == "NoClip" then
+        if value then startNoClip()    else stopNoClip()    end
 
-exploitVFX()
+    elseif key == "VoidEnemies" then
+        if value then startVoidEnemies() else stopVoidEnemies() end
 
--- ─────────────────────────────────────────────────────────────
---  TOGGLE DISPATCH
--- ─────────────────────────────────────────────────────────────
-local function applyFeature(key, enabled)
-    if key == "GodMode"      then if enabled then startGodMode()      else stopGodMode()      end end
-    if key == "SpeedHack"    then if enabled then startSpeedHack()    else stopSpeedHack()    end end
-    if key == "VoidEnemies"  then if enabled then startVoidEnemies()  else stopVoidEnemies()  end end
-    if key == "NoClip"       then if enabled then startNoClip()       else stopNoClip()       end end
-    if key == "CameraLock"   then if enabled then startCameraLock()   else stopCameraLock()   end end
-    if key == "AutoShoot"    then if enabled then startAutoShoot()    else stopAutoShoot()    end end
-    if key == "NoReload" or key == "InfiniteAmmo" then
-        if enabled then patchWeaponTables() end
-    end
-    if key == "AntiAC" then
-        print("[exploit] AntiAC " .. (enabled and "ON" or "OFF") .. " — __index hook active")
+    elseif key == "CameraLock" then
+        if value then startCameraLock() else stopCameraLock() end
+
+    elseif key == "AutoShoot" then
+        if value then startAutoShoot()  else stopAutoShoot()  end
+
+    elseif key == "InfiniteAmmo" or key == "NoReload" then
+        if value then patchWeaponTables() end
+
+    elseif key == "RemoteSpy" then
+        spyLog = {}  -- reset log on toggle
+        print("[exploit] Remote Spy " .. (value and "ON" or "OFF"))
+
+    elseif key == "AntiAC" then
+        print("[exploit] AntiAC __index lie " .. (value and "ON" or "OFF"))
+
+    elseif key == "SpeedMultiplier" then
+        -- value is the new number from the slider
+        -- speedConn will pick it up next Heartbeat automatically
+        if not State.SpeedHack then return end
+
+    elseif key == "AimFOV" then
+        -- picked up automatically by getNearestEnemy()
     end
 end
 
@@ -726,8 +625,8 @@ end
 --  CARTOON UI
 -- ─────────────────────────────────────────────────────────────
 local PAL = {
-    bg       = Color3.fromRGB(12, 10, 28),
-    panel    = Color3.fromRGB(22, 18, 48),
+    bg       = Color3.fromRGB(12,  10,  28),
+    panel    = Color3.fromRGB(22,  18,  48),
     accent   = Color3.fromRGB(110, 60, 255),
     accentHi = Color3.fromRGB(170,120, 255),
     on       = Color3.fromRGB( 60, 255, 130),
@@ -738,9 +637,12 @@ local PAL = {
     danger   = Color3.fromRGB(255,  60,  80),
     warn     = Color3.fromRGB(255, 180,  40),
     info     = Color3.fromRGB( 60, 180, 255),
+    green    = Color3.fromRGB( 60, 255, 130),
+    purple   = Color3.fromRGB(120,  40, 200),
+    orange   = Color3.fromRGB(255, 140,  40),
 }
 
-local function tween(obj, props, t, style, dir)
+local function tw(obj, props, t, style, dir)
     TweenService:Create(obj,
         TweenInfo.new(t or 0.18,
             style or Enum.EasingStyle.Quad,
@@ -749,14 +651,14 @@ local function tween(obj, props, t, style, dir)
     ):Play()
 end
 
-local function corner(p, r)
+local function mkCorner(p, r)
     local c = Instance.new("UICorner")
     c.CornerRadius = UDim.new(0, r or 14)
     c.Parent = p
     return c
 end
 
-local function uiStroke(p, col, thick)
+local function mkStroke(p, col, thick)
     local s = Instance.new("UIStroke")
     s.Color     = col   or PAL.accent
     s.Thickness = thick or 2
@@ -764,40 +666,42 @@ local function uiStroke(p, col, thick)
     return s
 end
 
--- ── root ─────────────────────────────────────────────────────
+-- ── root gui ─────────────────────────────────────────────────
 local SG = Instance.new("ScreenGui")
-SG.Name           = "VoidGodExploit"
-SG.ResetOnSpawn   = false
-SG.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
-SG.Parent         = LP:WaitForChild("PlayerGui")
+SG.Name             = "VoidGodExploit"
+SG.ResetOnSpawn     = false
+SG.ZIndexBehavior   = Enum.ZIndexBehavior.Sibling
+SG.IgnoreGuiInset   = true
+SG.Parent           = LP:WaitForChild("PlayerGui")
 
-local WIN_W, WIN_H = 400, 540
+local WIN_W, WIN_H = 410, 560
 
 local Main = Instance.new("Frame")
 Main.Name             = "Main"
 Main.Size             = UDim2.fromOffset(WIN_W, 0)
-Main.Position         = UDim2.new(0.5,-WIN_W/2, 0.5,-WIN_H/2)
+Main.Position         = UDim2.new(0.5, -WIN_W/2, 0.5, -WIN_H/2)
 Main.BackgroundColor3 = PAL.bg
 Main.BorderSizePixel  = 0
 Main.Active           = true
 Main.Draggable        = true
+Main.ClipsDescendants = false
 Main.Parent           = SG
-corner(Main, 18)
-uiStroke(Main, PAL.accent, 2.5)
+mkCorner(Main, 18)
+mkStroke(Main, PAL.accent, 2.5)
 
--- ── top bar ──────────────────────────────────────────────────
+-- ── title bar ────────────────────────────────────────────────
 local TopBar = Instance.new("Frame")
-TopBar.Size             = UDim2.new(1,0,0,60)
+TopBar.Size             = UDim2.new(1, 0, 0, 62)
 TopBar.BackgroundColor3 = PAL.panel
 TopBar.BorderSizePixel  = 0
 TopBar.ZIndex           = 2
 TopBar.Parent           = Main
-corner(TopBar, 18)
+mkCorner(TopBar, 18)
 
--- fill bottom corners of topbar
+-- fill lower-half corners of topbar so it looks flush
 local TBFill = Instance.new("Frame")
-TBFill.Size             = UDim2.new(1,0,0.5,0)
-TBFill.Position         = UDim2.fromScale(0,0.5)
+TBFill.Size             = UDim2.new(1, 0, 0.5, 0)
+TBFill.Position         = UDim2.fromScale(0, 0.5)
 TBFill.BackgroundColor3 = PAL.panel
 TBFill.BorderSizePixel  = 0
 TBFill.ZIndex           = 2
@@ -805,273 +709,137 @@ TBFill.Parent           = TopBar
 
 local grad = Instance.new("UIGradient")
 grad.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(80, 40, 200)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(180, 60, 255)),
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(70, 30, 200)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(180, 50, 255)),
 })
 grad.Rotation = 90
 grad.Parent   = TopBar
 
--- shimmer
+-- shimmer animation
 task.spawn(function()
     local t = 0
     while Main and Main.Parent do
-        t = (t + 0.01) % 1
-        grad.Offset = Vector2.new(t * 0.5, 0)
+        t = (t + 0.008) % 1
+        grad.Offset = Vector2.new(t * 0.6, 0)
         task.wait()
     end
 end)
 
-local TitleLbl = Instance.new("TextLabel")
-TitleLbl.Size               = UDim2.new(1,-80,1,0)
-TitleLbl.Position           = UDim2.fromOffset(16,0)
-TitleLbl.BackgroundTransparency = 1
-TitleLbl.Text               = "✦  MODULE EXPLOIT  ✦"
-TitleLbl.TextColor3         = Color3.new(1,1,1)
-TitleLbl.Font               = Enum.Font.GothamBlack
-TitleLbl.TextSize           = 20
-TitleLbl.TextXAlignment     = Enum.TextXAlignment.Left
-TitleLbl.ZIndex             = 3
-TitleLbl.Parent             = TopBar
+local TitleTxt = Instance.new("TextLabel")
+TitleTxt.Size               = UDim2.new(1, -80, 1, 0)
+TitleTxt.Position           = UDim2.fromOffset(16, 0)
+TitleTxt.BackgroundTransparency = 1
+TitleTxt.Text               = "✦  EXPLOIT  ✦"
+TitleTxt.TextColor3         = Color3.new(1, 1, 1)
+TitleTxt.Font               = Enum.Font.GothamBlack
+TitleTxt.TextSize           = 22
+TitleTxt.TextXAlignment     = Enum.TextXAlignment.Left
+TitleTxt.ZIndex             = 3
+TitleTxt.Parent             = TopBar
 
-local SubLbl = Instance.new("TextLabel")
-SubLbl.Size                 = UDim2.new(1,-80,0,14)
-SubLbl.Position             = UDim2.new(0,16,1,-18)
-SubLbl.BackgroundTransparency = 1
-SubLbl.Text                 = LP.Name .. "  ·  hooks: Util + PlayerModule"
-SubLbl.TextColor3           = PAL.sub
-SubLbl.Font                 = Enum.Font.Gotham
-SubLbl.TextSize             = 11
-SubLbl.TextXAlignment       = Enum.TextXAlignment.Left
-SubLbl.ZIndex               = 3
-SubLbl.Parent               = TopBar
+local SubTxt = Instance.new("TextLabel")
+SubTxt.Size                 = UDim2.new(1, -80, 0, 14)
+SubTxt.Position             = UDim2.new(0, 16, 1, -18)
+SubTxt.BackgroundTransparency = 1
+SubTxt.Text                 = LP.Name .. "  ·  Util + PlayerModule hooked"
+SubTxt.TextColor3           = PAL.sub
+SubTxt.Font                 = Enum.Font.Gotham
+SubTxt.TextSize             = 11
+SubTxt.TextXAlignment       = Enum.TextXAlignment.Left
+SubTxt.ZIndex               = 3
+SubTxt.Parent               = TopBar
 
--- close
+-- close button
 local CloseBtn = Instance.new("TextButton")
-CloseBtn.Size             = UDim2.fromOffset(30,30)
-CloseBtn.Position         = UDim2.new(1,-40,0,15)
+CloseBtn.Size             = UDim2.fromOffset(30, 30)
+CloseBtn.Position         = UDim2.new(1, -42, 0, 16)
 CloseBtn.BackgroundColor3 = PAL.danger
 CloseBtn.Text             = "✕"
-CloseBtn.TextColor3       = Color3.new(1,1,1)
+CloseBtn.TextColor3       = Color3.new(1, 1, 1)
 CloseBtn.Font             = Enum.Font.GothamBold
 CloseBtn.TextSize         = 14
 CloseBtn.ZIndex           = 4
 CloseBtn.Parent           = TopBar
-corner(CloseBtn, 8)
+mkCorner(CloseBtn, 8)
 
 CloseBtn.MouseButton1Click:Connect(function()
-    tween(Main, {Size=UDim2.fromOffset(WIN_W,0), BackgroundTransparency=1}, 0.2)
+    tw(Main, {Size=UDim2.fromOffset(WIN_W,0), BackgroundTransparency=1}, 0.2)
     task.delay(0.22, function() SG:Destroy() end)
 end)
 
--- ── status bar (shows which modules loaded) ───────────────────
+-- ── module status bar ────────────────────────────────────────
 local StatusBar = Instance.new("Frame")
-StatusBar.Size             = UDim2.new(1,-20,0,30)
-StatusBar.Position         = UDim2.fromOffset(10,66)
+StatusBar.Size             = UDim2.new(1, -20, 0, 28)
+StatusBar.Position         = UDim2.fromOffset(10, 68)
 StatusBar.BackgroundColor3 = PAL.panel
 StatusBar.BorderSizePixel  = 0
 StatusBar.Parent           = Main
-corner(StatusBar, 10)
+mkCorner(StatusBar, 8)
 
-local StatusLbl = Instance.new("TextLabel")
-StatusLbl.Size               = UDim2.fromScale(1,1)
-StatusLbl.BackgroundTransparency = 1
-StatusLbl.TextColor3         = PAL.info
-StatusLbl.Font               = Enum.Font.GothamSemibold
-StatusLbl.TextSize           = 11
-StatusLbl.TextXAlignment     = Enum.TextXAlignment.Left
-StatusLbl.TextYAlignment     = Enum.TextYAlignment.Center
-StatusLbl.Parent             = StatusBar
+local UIPadSB = Instance.new("UIPadding")
+UIPadSB.PaddingLeft = UDim.new(0, 10)
+UIPadSB.Parent      = StatusBar
 
-local UIPad2 = Instance.new("UIPadding")
-UIPad2.PaddingLeft = UDim.new(0,10)
-UIPad2.Parent      = StatusBar
+local StatusTxt = Instance.new("TextLabel")
+StatusTxt.Size               = UDim2.fromScale(1, 1)
+StatusTxt.BackgroundTransparency = 1
+StatusTxt.TextColor3         = PAL.info
+StatusTxt.Font               = Enum.Font.GothamSemibold
+StatusTxt.TextSize           = 10
+StatusTxt.TextXAlignment     = Enum.TextXAlignment.Left
+StatusTxt.TextYAlignment     = Enum.TextYAlignment.Center
+StatusTxt.Parent             = StatusBar
 
--- build status string
 local statusParts = {}
-local moduleNames = {
-    {"Util",      UtilRoot       ~= nil},
-    {"Character", UtilCharacter  ~= nil},
-    {"Raycast",   UtilRaycast    ~= nil},
-    {"Attribute", UtilAttribute  ~= nil},
-    {"Team",      UtilTeam       ~= nil},
-    {"Input",     UtilInput      ~= nil},
-    {"PM",        PM             ~= nil},
-    {"Camera",    Cameras        ~= nil},
-    {"Controls",  Controls       ~= nil},
-}
-for _, m in ipairs(moduleNames) do
+for _, m in ipairs({
+    {"Util",      UtilRoot      ~= nil},
+    {"Char",      UtilCharacter ~= nil},
+    {"Attr",      UtilAttribute ~= nil},
+    {"Raycast",   UtilRaycast   ~= nil},
+    {"Team",      UtilTeam      ~= nil},
+    {"VFX",       UtilVFX       ~= nil},
+    {"PM",        PM            ~= nil},
+    {"Cam",       Cameras       ~= nil},
+    {"Ctrl",      Controls      ~= nil},
+}) do
     table.insert(statusParts, (m[2] and "✔ " or "✘ ") .. m[1])
 end
-StatusLbl.Text = table.concat(statusParts, "   ")
+StatusTxt.Text = table.concat(statusParts, "  ")
 
--- ── scroll frame ─────────────────────────────────────────────
+-- ── scroll ───────────────────────────────────────────────────
 local Scroll = Instance.new("ScrollingFrame")
-Scroll.Size                  = UDim2.new(1,-20,1,-108)
-Scroll.Position              = UDim2.fromOffset(10,104)
-Scroll.BackgroundTransparency= 1
+Scroll.Size                  = UDim2.new(1, -20, 1, -106)
+Scroll.Position              = UDim2.fromOffset(10, 102)
+Scroll.BackgroundTransparency = 1
 Scroll.BorderSizePixel       = 0
 Scroll.ScrollBarThickness    = 4
 Scroll.ScrollBarImageColor3  = PAL.accentHi
-Scroll.CanvasSize            = UDim2.fromOffset(0,0)
+Scroll.CanvasSize            = UDim2.fromOffset(0, 0)
 Scroll.AutomaticCanvasSize   = Enum.AutomaticSize.Y
 Scroll.Parent                = Main
 
 local List = Instance.new("UIListLayout")
 List.SortOrder = Enum.SortOrder.LayoutOrder
-List.Padding   = UDim.new(0,8)
+List.Padding   = UDim.new(0, 8)
 List.Parent    = Scroll
 
-local Pad = Instance.new("UIPadding")
-Pad.PaddingTop    = UDim.new(0,6)
-Pad.PaddingBottom = UDim.new(0,6)
-Pad.PaddingLeft   = UDim.new(0,2)
-Pad.PaddingRight  = UDim.new(0,2)
-Pad.Parent        = Scroll
+local ListPad = Instance.new("UIPadding")
+ListPad.PaddingTop    = UDim.new(0, 4)
+ListPad.PaddingBottom = UDim.new(0, 8)
+ListPad.PaddingLeft   = UDim.new(0, 2)
+ListPad.PaddingRight  = UDim.new(0, 2)
+ListPad.Parent        = Scroll
 
--- ── card factory ─────────────────────────────────────────────
-local function makeCard(cfg)
-    --[[
-    cfg = {
-        order    = int,
-        icon     = "string",
-        iconColor= Color3,
-        title    = "string",
-        sub      = "string",
-        stateKey = "string",    -- key in State
-        pillColor= Color3,      -- override ON colour
-    }
-    ]]
-    local onColor = cfg.pillColor or PAL.on
-
-    local card = Instance.new("Frame")
-    card.LayoutOrder      = cfg.order
-    card.Size             = UDim2.new(1,0,0,72)
-    card.BackgroundColor3 = PAL.panel
-    card.BorderSizePixel  = 0
-    card.Parent           = Scroll
-    corner(card, 14)
-    local cardStroke = uiStroke(card, PAL.accent, 1.5)
-
-    -- icon
-    local ic = Instance.new("Frame")
-    ic.Size             = UDim2.fromOffset(46,46)
-    ic.Position         = UDim2.fromOffset(12,13)
-    ic.BackgroundColor3 = cfg.iconColor or PAL.accent
-    ic.BorderSizePixel  = 0
-    ic.Parent           = card
-    corner(ic, 13)
-
-    local icLbl = Instance.new("TextLabel")
-    icLbl.Size               = UDim2.fromScale(1,1)
-    icLbl.BackgroundTransparency = 1
-    icLbl.Text               = cfg.icon
-    icLbl.TextColor3         = Color3.new(1,1,1)
-    icLbl.Font               = Enum.Font.GothamBold
-    icLbl.TextSize           = 22
-    icLbl.Parent             = ic
-
-    -- title
-    local tl = Instance.new("TextLabel")
-    tl.Size                  = UDim2.new(1,-130,0,20)
-    tl.Position              = UDim2.fromOffset(68,15)
-    tl.BackgroundTransparency= 1
-    tl.Text                  = cfg.title
-    tl.TextColor3            = PAL.text
-    tl.Font                  = Enum.Font.GothamBold
-    tl.TextSize              = 15
-    tl.TextXAlignment        = Enum.TextXAlignment.Left
-    tl.Parent                = card
-
-    -- subtitle
-    local sl = Instance.new("TextLabel")
-    sl.Size                  = UDim2.new(1,-130,0,16)
-    sl.Position              = UDim2.fromOffset(68,38)
-    sl.BackgroundTransparency= 1
-    sl.Text                  = cfg.sub
-    sl.TextColor3            = PAL.sub
-    sl.Font                  = Enum.Font.Gotham
-    sl.TextSize              = 11
-    sl.TextXAlignment        = Enum.TextXAlignment.Left
-    sl.TextWrapped           = true
-    sl.Parent                = card
-
-    -- pill
-    local pill = Instance.new("Frame")
-    pill.Size             = UDim2.fromOffset(64,28)
-    pill.Position         = UDim2.new(1,-76,0.5,-14)
-    pill.BackgroundColor3 = State[cfg.stateKey] and onColor or PAL.off
-    pill.BorderSizePixel  = 0
-    pill.Parent           = card
-    corner(pill, 14)
-
-    local pillTxt = Instance.new("TextLabel")
-    pillTxt.Size               = UDim2.fromScale(1,1)
-    pillTxt.BackgroundTransparency = 1
-    pillTxt.Text               = State[cfg.stateKey] and "ON" or "OFF"
-    pillTxt.TextColor3         = Color3.new(1,1,1)
-    pillTxt.Font               = Enum.Font.GothamBold
-    pillTxt.TextSize           = 12
-    pillTxt.Parent             = pill
-
-    local knob = Instance.new("Frame")
-    knob.Size             = UDim2.fromOffset(20,20)
-    knob.Position         = State[cfg.stateKey]
-        and UDim2.fromOffset(40,4) or UDim2.fromOffset(4,4)
-    knob.BackgroundColor3 = Color3.new(1,1,1)
-    knob.BorderSizePixel  = 0
-    knob.Parent           = pill
-    corner(knob,10)
-
-    -- hit area
-    local hit = Instance.new("TextButton")
-    hit.Size               = UDim2.fromScale(1,1)
-    hit.BackgroundTransparency = 1
-    hit.Text               = ""
-    hit.ZIndex             = 5
-    hit.Parent             = card
-
-    local function refresh()
-        local on = State[cfg.stateKey]
-        tween(pill, {BackgroundColor3 = on and onColor or PAL.off}, 0.15)
-        tween(knob, {Position = on
-            and UDim2.fromOffset(40,4) or UDim2.fromOffset(4,4)}, 0.15)
-        pillTxt.Text = on and "ON" or "OFF"
-    end
-
-    hit.MouseButton1Click:Connect(function()
-        State[cfg.stateKey] = not State[cfg.stateKey]
-        refresh()
-        applyFeature(cfg.stateKey, State[cfg.stateKey])
-        -- icon bounce
-        tween(ic, {BackgroundColor3 = PAL.accentHi}, 0.07)
-        task.delay(0.12, function()
-            tween(ic, {BackgroundColor3 = cfg.iconColor or PAL.accent}, 0.12)
-        end)
-        -- stroke flash
-        tween(cardStroke, {Color = State[cfg.stateKey] and onColor or PAL.accent}, 0.12)
-        task.delay(0.4, function()
-            tween(cardStroke, {Color = PAL.accent}, 0.3)
-        end)
-    end)
-
-    hit.MouseEnter:Connect(function()
-        tween(card, {BackgroundColor3 = Color3.fromRGB(32,24,64)}, 0.1)
-    end)
-    hit.MouseLeave:Connect(function()
-        tween(card, {BackgroundColor3 = PAL.panel}, 0.1)
-    end)
-end
-
--- ── separator ─────────────────────────────────────────────────
+-- ── section separator ────────────────────────────────────────
 local function makeSep(text, order)
     local f = Instance.new("Frame")
     f.LayoutOrder        = order
-    f.Size               = UDim2.new(1,0,0,22)
+    f.Size               = UDim2.new(1, 0, 0, 22)
     f.BackgroundTransparency = 1
     f.Parent             = Scroll
 
     local l = Instance.new("TextLabel")
-    l.Size               = UDim2.new(0,120,1,0)
+    l.Size               = UDim2.new(0, 110, 1, 0)
     l.BackgroundTransparency = 1
     l.Text               = "  " .. text
     l.TextColor3         = PAL.sub
@@ -1081,238 +849,330 @@ local function makeSep(text, order)
     l.Parent             = f
 
     local line = Instance.new("Frame")
-    line.Size            = UDim2.new(1,-130,0,1)
-    line.Position        = UDim2.new(0,124,0.5,0)
+    line.Size            = UDim2.new(1, -118, 0, 1)
+    line.Position        = UDim2.new(0, 114, 0.5, 0)
     line.BackgroundColor3 = PAL.accent
     line.BackgroundTransparency = 0.65
     line.BorderSizePixel = 0
     line.Parent          = f
 end
 
--- ── slider factory ────────────────────────────────────────────
-local function makeSlider(cfg)
-    --[[
-    cfg = {
-        order   = int,
-        title   = "string",
-        min     = number,
-        max     = number,
-        default = number,
-        suffix  = "string",
-        stateKey= "string",   -- key in State (must be a number)
-        iconColor = Color3,
-    }
-    ]]
+-- ── toggle card factory ──────────────────────────────────────
+local function makeCard(cfg)
+    local onCol = cfg.pillColor or PAL.on
+
     local card = Instance.new("Frame")
     card.LayoutOrder      = cfg.order
-    card.Size             = UDim2.new(1,0,0,72)
+    card.Size             = UDim2.new(1, 0, 0, 70)
     card.BackgroundColor3 = PAL.panel
     card.BorderSizePixel  = 0
     card.Parent           = Scroll
-    corner(card, 14)
-    uiStroke(card, PAL.accent, 1.5)
+    mkCorner(card, 14)
+    local cStroke = mkStroke(card, PAL.accent, 1.5)
+
+    -- icon bubble
+    local ic = Instance.new("Frame")
+    ic.Size             = UDim2.fromOffset(44, 44)
+    ic.Position         = UDim2.fromOffset(12, 13)
+    ic.BackgroundColor3 = cfg.iconColor or PAL.accent
+    ic.BorderSizePixel  = 0
+    ic.Parent           = card
+    mkCorner(ic, 12)
+
+    local icLbl = Instance.new("TextLabel")
+    icLbl.Size               = UDim2.fromScale(1, 1)
+    icLbl.BackgroundTransparency = 1
+    icLbl.Text               = cfg.icon
+    icLbl.TextColor3         = Color3.new(1, 1, 1)
+    icLbl.Font               = Enum.Font.GothamBold
+    icLbl.TextSize           = 20
+    icLbl.Parent             = ic
+
+    -- title
+    local tLbl = Instance.new("TextLabel")
+    tLbl.Size               = UDim2.new(1, -130, 0, 20)
+    tLbl.Position           = UDim2.fromOffset(66, 14)
+    tLbl.BackgroundTransparency = 1
+    tLbl.Text               = cfg.title
+    tLbl.TextColor3         = PAL.text
+    tLbl.Font               = Enum.Font.GothamBold
+    tLbl.TextSize           = 14
+    tLbl.TextXAlignment     = Enum.TextXAlignment.Left
+    tLbl.Parent             = card
+
+    -- subtitle
+    local sLbl = Instance.new("TextLabel")
+    sLbl.Size               = UDim2.new(1, -130, 0, 16)
+    sLbl.Position           = UDim2.fromOffset(66, 36)
+    sLbl.BackgroundTransparency = 1
+    sLbl.Text               = cfg.sub
+    sLbl.TextColor3         = PAL.sub
+    sLbl.Font               = Enum.Font.Gotham
+    sLbl.TextSize           = 10
+    sLbl.TextXAlignment     = Enum.TextXAlignment.Left
+    sLbl.TextWrapped        = true
+    sLbl.Parent             = card
+
+    -- pill
+    local pill = Instance.new("Frame")
+    pill.Size             = UDim2.fromOffset(62, 28)
+    pill.Position         = UDim2.new(1, -74, 0.5, -14)
+    pill.BackgroundColor3 = State[cfg.stateKey] and onCol or PAL.off
+    pill.BorderSizePixel  = 0
+    pill.Parent           = card
+    mkCorner(pill, 14)
+
+    local pillTxt = Instance.new("TextLabel")
+    pillTxt.Size               = UDim2.fromScale(1, 1)
+    pillTxt.BackgroundTransparency = 1
+    pillTxt.Text               = State[cfg.stateKey] and "ON" or "OFF"
+    pillTxt.TextColor3         = Color3.new(1, 1, 1)
+    pillTxt.Font               = Enum.Font.GothamBold
+    pillTxt.TextSize           = 12
+    pillTxt.Parent             = pill
+
+    local knob = Instance.new("Frame")
+    knob.Size             = UDim2.fromOffset(20, 20)
+    knob.Position         = State[cfg.stateKey]
+        and UDim2.fromOffset(38, 4) or UDim2.fromOffset(4, 4)
+    knob.BackgroundColor3 = Color3.new(1, 1, 1)
+    knob.BorderSizePixel  = 0
+    knob.Parent           = pill
+    mkCorner(knob, 10)
+
+    -- invisible hit target
+    local hit = Instance.new("TextButton")
+    hit.Size               = UDim2.fromScale(1, 1)
+    hit.BackgroundTransparency = 1
+    hit.Text               = ""
+    hit.ZIndex             = 5
+    hit.Parent             = card
+
+    local function refresh()
+        local on = State[cfg.stateKey]
+        tw(pill,  {BackgroundColor3 = on and onCol or PAL.off}, 0.15)
+        tw(knob,  {Position = on
+            and UDim2.fromOffset(38, 4)
+            or  UDim2.fromOffset( 4, 4)}, 0.15)
+        pillTxt.Text = on and "ON" or "OFF"
+    end
+
+    hit.MouseButton1Click:Connect(function()
+        State[cfg.stateKey] = not State[cfg.stateKey]
+        refresh()
+        applyFeature(cfg.stateKey, State[cfg.stateKey])
+        -- icon pulse
+        tw(ic, {BackgroundColor3 = PAL.accentHi}, 0.07)
+        task.delay(0.13, function()
+            tw(ic, {BackgroundColor3 = cfg.iconColor or PAL.accent}, 0.13)
+        end)
+        -- border flash
+        tw(cStroke, {Color = State[cfg.stateKey] and onCol or PAL.accent}, 0.1)
+        task.delay(0.5, function()
+            tw(cStroke, {Color = PAL.accent}, 0.35)
+        end)
+    end)
+
+    hit.MouseEnter:Connect(function()
+        tw(card, {BackgroundColor3 = Color3.fromRGB(30, 22, 60)}, 0.1)
+    end)
+    hit.MouseLeave:Connect(function()
+        tw(card, {BackgroundColor3 = PAL.panel}, 0.1)
+    end)
+end
+
+-- ── slider card factory ──────────────────────────────────────
+local function makeSlider(cfg)
+    local card = Instance.new("Frame")
+    card.LayoutOrder      = cfg.order
+    card.Size             = UDim2.new(1, 0, 0, 70)
+    card.BackgroundColor3 = PAL.panel
+    card.BorderSizePixel  = 0
+    card.Parent           = Scroll
+    mkCorner(card, 14)
+    mkStroke(card, PAL.accent, 1.5)
 
     local valLbl = Instance.new("TextLabel")
-    valLbl.Size               = UDim2.new(1,-20,0,20)
-    valLbl.Position           = UDim2.fromOffset(12,8)
+    valLbl.Size               = UDim2.new(1, -20, 0, 20)
+    valLbl.Position           = UDim2.fromOffset(14, 10)
     valLbl.BackgroundTransparency = 1
-    valLbl.Text               = cfg.title .. ":  " .. tostring(State[cfg.stateKey]) .. (cfg.suffix or "")
+    valLbl.Text               = cfg.title .. ":  "
+        .. tostring(State[cfg.stateKey]) .. (cfg.suffix or "")
     valLbl.TextColor3         = PAL.text
     valLbl.Font               = Enum.Font.GothamBold
     valLbl.TextSize           = 13
     valLbl.TextXAlignment     = Enum.TextXAlignment.Left
     valLbl.Parent             = card
 
-    local track = Instance.new("Frame")
-    track.Size             = UDim2.new(1,-24,0,10)
-    track.Position         = UDim2.fromOffset(12,38)
-    track.BackgroundColor3 = PAL.off
-    track.BorderSizePixel  = 0
-    track.Parent           = card
-    corner(track, 5)
+    local trackBg = Instance.new("Frame")
+    trackBg.Size             = UDim2.new(1, -28, 0, 10)
+    trackBg.Position         = UDim2.fromOffset(14, 40)
+    trackBg.BackgroundColor3 = PAL.off
+    trackBg.BorderSizePixel  = 0
+    trackBg.Parent           = card
+    mkCorner(trackBg, 5)
 
-    local fill = Instance.new("Frame")
     local pct  = (State[cfg.stateKey] - cfg.min) / (cfg.max - cfg.min)
-    fill.Size             = UDim2.fromScale(math.clamp(pct,0,1), 1)
-    fill.BackgroundColor3 = cfg.iconColor or PAL.accent
+    local fill = Instance.new("Frame")
+    fill.Size             = UDim2.fromScale(math.clamp(pct, 0, 1), 1)
+    fill.BackgroundColor3 = cfg.fillColor or PAL.accent
     fill.BorderSizePixel  = 0
-    fill.Parent           = track
-    corner(fill, 5)
+    fill.Parent           = trackBg
+    mkCorner(fill, 5)
 
-    -- drag
     local dragging = false
-    local function updateSlider(inputX)
-        local tPos   = track.AbsolutePosition.X
-        local tSize  = track.AbsoluteSize.X
-        local rel    = math.clamp((inputX - tPos) / tSize, 0, 1)
-        local val    = math.floor(cfg.min + rel * (cfg.max - cfg.min))
+
+    local function updateVal(inputX)
+        local rel = math.clamp(
+            (inputX - trackBg.AbsolutePosition.X) / trackBg.AbsoluteSize.X,
+            0, 1
+        )
+        local val = math.floor(cfg.min + rel * (cfg.max - cfg.min))
         State[cfg.stateKey] = val
-        tween(fill, {Size = UDim2.fromScale(rel,1)}, 0.05)
+        tw(fill, {Size = UDim2.fromScale(rel, 1)}, 0.04)
         valLbl.Text = cfg.title .. ":  " .. tostring(val) .. (cfg.suffix or "")
         applyFeature(cfg.stateKey, val)
     end
 
     local hitArea = Instance.new("TextButton")
-    hitArea.Size               = UDim2.fromScale(1,1)
-    hitArea.Position           = UDim2.fromOffset(0,-14)
+    hitArea.Size               = UDim2.new(1, 0, 1, 20)
+    hitArea.Position           = UDim2.fromOffset(0, -10)
     hitArea.BackgroundTransparency = 1
     hitArea.Text               = ""
     hitArea.ZIndex             = 5
-    hitArea.Parent             = track
+    hitArea.Parent             = trackBg
 
-    hitArea.MouseButton1Down:Connect(function(x,_)
-        dragging = true
-        updateSlider(x)
-    end)
-    UserInputService.InputChanged:Connect(function(input)
-        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            updateSlider(input.Position.X)
+    hitArea.MouseButton1Down:Connect(function(x, _) dragging=true updateVal(x) end)
+    UserInputService.InputChanged:Connect(function(inp)
+        if dragging and inp.UserInputType == Enum.UserInputType.MouseMovement then
+            updateVal(inp.Position.X)
         end
     end)
-    UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+    UserInputService.InputEnded:Connect(function(inp)
+        if inp.UserInputType == Enum.UserInputType.MouseButton1 then
             dragging = false
         end
     end)
 end
 
--- ── build cards ───────────────────────────────────────────────
+-- ── build all cards ──────────────────────────────────────────
 
-makeSep("PLAYER", 0)
+makeSep("PLAYER",  0)
 
 makeCard({
-    order    = 1,
-    icon     = "♥",
-    iconColor= PAL.danger,
-    title    = "GOD MODE",
-    sub      = "Health lock + Attribute.Set hook + damage remote block",
-    stateKey = "GodMode",
-    pillColor= PAL.danger,
+    order=1, icon="♥", iconColor=PAL.danger,
+    title="GOD MODE",
+    sub="Health lock + Attribute.Set hook",
+    stateKey="GodMode", pillColor=PAL.danger,
 })
 
 makeCard({
-    order    = 2,
-    icon     = "⚡",
-    iconColor= PAL.warn,
-    title    = "SPEED HACK",
-    sub      = "WalkSpeed × multiplier + rawset UtilCharacter",
-    stateKey = "SpeedHack",
-    pillColor= PAL.warn,
+    order=2, icon="⚡", iconColor=PAL.warn,
+    title="SPEED HACK",
+    sub="WalkSpeed × multiplier + rawset UtilCharacter",
+    stateKey="SpeedHack", pillColor=PAL.warn,
 })
 
 makeCard({
-    order    = 3,
-    icon     = "👻",
-    iconColor= PAL.info,
-    title    = "NO CLIP",
-    sub      = "CanCollide = false every Stepped frame",
-    stateKey = "NoClip",
-    pillColor= PAL.info,
+    order=3, icon="👻", iconColor=PAL.info,
+    title="NO CLIP",
+    sub="CanCollide = false every Stepped frame",
+    stateKey="NoClip", pillColor=PAL.info,
 })
 
 makeSep("WEAPONS", 4)
 
 makeCard({
-    order    = 5,
-    icon     = "∞",
-    iconColor= Color3.fromRGB(80,255,160),
-    title    = "INFINITE AMMO",
-    sub      = "rawset ammo = 9999 on every weapon table",
-    stateKey = "InfiniteAmmo",
+    order=5, icon="∞", iconColor=PAL.green,
+    title="INFINITE AMMO",
+    sub="rawset ammo = 9999 across all weapon tables",
+    stateKey="InfiniteAmmo", pillColor=PAL.green,
 })
 
 makeCard({
-    order    = 6,
-    icon     = "⚙",
-    iconColor= Color3.fromRGB(180,100,255),
-    title    = "NO RELOAD",
-    sub      = "rawset ReloadLength / FireRate = 0 via ItemLibrary",
-    stateKey = "NoReload",
+    order=6, icon="⚙", iconColor=PAL.accentHi,
+    title="NO RELOAD",
+    sub="rawset ReloadLength / FireRate = 0",
+    stateKey="NoReload", pillColor=PAL.accentHi,
 })
 
 makeSep("COMBAT", 7)
 
 makeCard({
-    order    = 8,
-    icon     = "🎯",
-    iconColor= Color3.fromRGB(255,80,80),
-    title    = "CAMERA LOCK",
-    sub      = "Locks camera to nearest enemy head within FOV",
-    stateKey = "CameraLock",
-    pillColor= Color3.fromRGB(255,80,80),
+    order=8, icon="🎯", iconColor=PAL.danger,
+    title="CAMERA LOCK",
+    sub="Locks camera + Raycast hook to enemy head",
+    stateKey="CameraLock", pillColor=PAL.danger,
 })
 
 makeCard({
-    order    = 9,
-    icon     = "🔫",
-    iconColor= Color3.fromRGB(255,140,40),
-    title    = "AUTO SHOOT",
-    sub      = "Fires shoot remotes when camera-locked on target",
-    stateKey = "AutoShoot",
-    pillColor= Color3.fromRGB(255,140,40),
+    order=9, icon="🔫", iconColor=PAL.orange,
+    title="AUTO SHOOT",
+    sub="Fires shoot remotes while camera-locked",
+    stateKey="AutoShoot", pillColor=PAL.orange,
 })
 
 makeCard({
-    order    = 10,
-    icon     = "☠",
-    iconColor= Color3.fromRGB(120,40,200),
-    title    = "VOID ENEMIES",
-    sub      = "Teleports all enemy HRP to 9000,9000,9000 every frame",
-    stateKey = "VoidEnemies",
-    pillColor= Color3.fromRGB(120,40,200),
+    order=10, icon="☠", iconColor=PAL.purple,
+    title="VOID ENEMIES",
+    sub="Teleports all enemy HRP to 9000,9000,9000",
+    stateKey="VoidEnemies", pillColor=PAL.purple,
 })
 
-makeSep("ANTI-CHEAT", 11)
+makeSep("TOOLS", 11)
 
 makeCard({
-    order    = 12,
-    icon     = "🛡",
-    iconColor= Color3.fromRGB(40,180,120),
-    title    = "ANTI AC",
-    sub      = "__index hook lies about WalkSpeed / Health to AC reads",
-    stateKey = "AntiAC",
-    pillColor= Color3.fromRGB(40,180,120),
+    order=12, icon="🛡", iconColor=PAL.green,
+    title="ANTI AC",
+    sub="__index lie: WalkSpeed/JumpPower report normal",
+    stateKey="AntiAC", pillColor=PAL.green,
 })
 
-makeSep("SLIDERS", 13)
+makeCard({
+    order=13, icon="📡", iconColor=PAL.info,
+    title="REMOTE SPY",
+    sub="Prints all FireServer calls to console (off = zero overhead)",
+    stateKey="RemoteSpy", pillColor=PAL.info,
+})
+
+makeSep("SETTINGS", 14)
 
 makeSlider({
-    order    = 14,
-    title    = "Speed Multiplier",
-    min      = 1,
-    max      = 10,
-    default  = 2,
-    suffix   = "x",
-    stateKey = "SpeedMultiplier",
-    iconColor= PAL.warn,
+    order=15, title="Speed Multiplier",
+    min=1, max=10, suffix="x",
+    stateKey="SpeedMultiplier", fillColor=PAL.warn,
 })
 
 makeSlider({
-    order    = 15,
-    title    = "Aim FOV",
-    min      = 50,
-    max      = 600,
-    default  = 200,
-    suffix   = "px",
-    stateKey = "AimFOV",
-    iconColor= Color3.fromRGB(255,80,80),
+    order=16, title="Aim FOV",
+    min=50, max=700, suffix=" px",
+    stateKey="AimFOV", fillColor=PAL.danger,
 })
 
--- ── intro pop ────────────────────────────────────────────────
-tween(Main,
-    {Size=UDim2.fromOffset(WIN_W,WIN_H)},
+-- ── open animation ───────────────────────────────────────────
+tw(Main,
+    {Size = UDim2.fromOffset(WIN_W, WIN_H)},
     0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 
--- ── respawn reconnect ────────────────────────────────────────
+-- ─────────────────────────────────────────────────────────────
+--  RESPAWN RECONNECT
+-- ─────────────────────────────────────────────────────────────
 LP.CharacterAdded:Connect(function(chr)
     Char = chr
-    task.wait(0.5)
-    if State.GodMode    then startGodMode()    end
-    if State.SpeedHack  then startSpeedHack()  end
-    if State.NoClip     then startNoClip()     end
-    if State.NoReload or State.InfiniteAmmo then patchWeaponTables() end
+    task.wait(0.6)
+    if State.GodMode       then startGodMode()       end
+    if State.SpeedHack     then startSpeedHack()     end
+    if State.NoClip        then startNoClip()        end
+    if State.VoidEnemies   then startVoidEnemies()   end
+    if State.CameraLock    then startCameraLock()    end
+    if State.AutoShoot     then startAutoShoot()     end
+    if State.InfiniteAmmo or State.NoReload then
+        patchWeaponTables()
+    end
 end)
 
-print("[exploit] loaded — modules acquired: " .. (UtilRoot and UtilRoot:GetFullName() or "none"))
-print("[exploit] PlayerModule: " .. (PM and "OK" or "not found"))
-print("[exploit] remote spy active — check console for SPY logs")
+-- ─────────────────────────────────────────────────────────────
+print("[exploit] loaded for " .. LP.Name)
+print("[exploit] Util: " .. (UtilRoot and UtilRoot:GetFullName() or "NOT FOUND"))
+print("[exploit] PM:   " .. (PM and "OK" or "NOT FOUND"))
+print("[exploit] Remote spy is OFF by default — toggle in UI")
