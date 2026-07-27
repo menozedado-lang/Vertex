@@ -1955,33 +1955,185 @@ local DISABLE_TRACERS = false
 local hitSound     = { enabled=false, style="Rust HS", volume=0.5, pitch=1.0 }
 local localHitTargets = setmetatable({}, { __mode = "k" })
 local silentAim    = { enabled=false, hitPart="Head", fovRadius=100, autoShoot=false, followMuzzle=false, followTarget=false, followTargetSmoothness=0, hitChance=100 }
-local aimbot       = {
-    enabled = false,
-    masterEnabled = false,
-    keyMode = "always",
-    showFov = false,
-    targetPart = "Head",
-    fovRadius = 500,
-    smoothness = 2,
-    aimCurve = "Linear",
-    followMuzzle = false,
-    followTarget = false,
-    followTargetSmoothness = 5,
-    lockedTarget = nil,
-    smoothCF = nil,
-    wallCheck = false,
-    -- Speed / lock controls
+-- ═══════════════════════════════════════════════════════════
+-- AIMBOT CONFIG (from Luau.txt AB system)
+-- ═══════════════════════════════════════════════════════════
+local AB = {
+    on            = false,
+    part          = "Head",
+    team          = false,
+    vis           = false,
+    fov           = 150,
+    drawFov       = false,
+    dynFov        = false,
+    lockMode      = "Soft",
+    curvePct      = 10,
     speed         = 1.0,
     speedAttack   = 1.0,
     speedScaleFov = 50,
     maxLock       = 3.0,
     reactTime     = 100,
-    _lockTimer    = 0,
-    _reactTimer   = 0,
-    _inReact      = false,
+    easyMode      = false,
+    easyPreset    = "Normal",
 }
-local backshoot    = { enabled=false, connection=nil, target=nil, origCFrame=nil }
 
+local EASY_PRESETS = {
+    Casual  = { speed=0.4,  speedAttack=0.6,  speedScaleFov=20, maxLock=5,  reactTime=220 },
+    Normal  = { speed=1.0,  speedAttack=1.5,  speedScaleFov=50, maxLock=3,  reactTime=110 },
+    Tryhard = { speed=2.5,  speedAttack=4.0,  speedScaleFov=80, maxLock=7,  reactTime=40  },
+}
+local function applyEasyPreset(name)
+    local p = EASY_PRESETS[name]; if not p then return end
+    AB.speed=p.speed; AB.speedAttack=p.speedAttack
+    AB.speedScaleFov=p.speedScaleFov; AB.maxLock=p.maxLock; AB.reactTime=p.reactTime
+    Library:Notify("Easy Preset: "..name, 3)
+end
+
+-- AB state
+local abTgt           = nil
+local abLockT         = 0
+local abReactT        = 0
+local abDoReact       = false
+local abPrevPos       = nil
+local abPrevTick      = 0
+local abCurveProgress = 0
+local abCurveStart    = nil
+local abCurveEnd      = nil
+
+local abCirc = Drawing.new("Circle")
+abCirc.NumSides=64; abCirc.Filled=false; abCirc.Color=Color3.fromRGB(255,255,255)
+abCirc.Thickness=1.5; abCirc.Transparency=0.7; abCirc.Visible=false
+
+local function abEffFov()
+    local f = AB.fov
+    if AB.dynFov then f = f * (Camera.FieldOfView/70) end
+    return f
+end
+
+local function abSameTm(p)
+    local r = false
+    pcall(function()
+        local a = LocalPlayer:GetAttribute("TeamID"); local b = p:GetAttribute("TeamID")
+        if a ~= nil and b ~= nil then r = (a == b) end
+    end)
+    return r
+end
+
+local function abInFov(part, fovSz)
+    if not part then return false end
+    local sp, on = Camera:WorldToViewportPoint(part.Position)
+    if not on then return false end
+    local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+    return (Vector2.new(sp.X, sp.Y) - center).Magnitude <= fovSz
+end
+
+local function abIsVis(orig, part)
+    if not part then return false end
+    local ok, res = pcall(function()
+        local rp = RaycastParams.new()
+        rp.FilterType = Enum.RaycastFilterType.Exclude
+        rp.FilterDescendantsInstances = {LocalPlayer.Character, part.Parent}
+        local d = part.Position - orig
+        local h = workspace:Raycast(orig, d, rp)
+        return h == nil or h.Instance:IsDescendantOf(part.Parent)
+    end)
+    return ok and res or false
+end
+
+local function abFind()
+    local center = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+    local fv = abEffFov()
+    local best = nil; local bd = fv
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p == LocalPlayer then continue end
+        if AB.team and abSameTm(p) then continue end
+        local chr = p.Character; if not chr then continue end
+        local hm = chr:FindFirstChildOfClass("Humanoid")
+        if not hm or hm.Health <= 0 then continue end
+        local pt = chr:FindFirstChild(AB.part) or chr:FindFirstChild("HumanoidRootPart")
+        if not pt then continue end
+        local sp, on = Camera:WorldToViewportPoint(pt.Position); if not on then continue end
+        local d = (Vector2.new(sp.X, sp.Y) - center).Magnitude
+        if d < bd then
+            if AB.vis and not abIsVis(Camera.CFrame.Position, pt) then continue end
+            bd = d; best = pt
+        end
+    end
+    return best
+end
+
+local function abTgtValid(pt)
+    if not pt or not pt.Parent then return false end
+    local h = pt.Parent:FindFirstChildOfClass("Humanoid")
+    if not h or h.Health <= 0 then return false end
+    if not abInFov(pt, abEffFov()) then return false end
+    if AB.vis and not abIsVis(Camera.CFrame.Position, pt) then return false end
+    if AB.team then
+        local p = Players:GetPlayerFromCharacter(pt.Parent)
+        if p and abSameTm(p) then return false end
+    end
+    return true
+end
+
+local function abAngDiff(f, t)
+    local d = t - f
+    return ((d + math.pi) % (math.pi*2)) - math.pi
+end
+
+local function abGetPredictedPos(pt)
+    local now = tick(); local pos = pt.Position
+    if abPrevPos and (now - abPrevTick) > 0 then
+        local el  = now - abPrevTick
+        local vel = (pos - abPrevPos) / el
+        pos = pos + vel * (0.08 * AB.speedAttack)
+    end
+    abPrevPos = pt.Position; abPrevTick = now
+    return pos
+end
+
+local function applySmartLock(tRot, cur, dt, screenDist, fovRadius)
+    local distFactor = AB.speed
+    if fovRadius > 0 then
+        local normalized = math.clamp(screenDist / fovRadius, 0, 1)
+        distFactor = AB.speed + (AB.speedScaleFov / 100)
+            * (1 - normalized) * math.max(AB.speedAttack - AB.speed, 0)
+    end
+    local eff    = math.clamp(distFactor, 0.01, 5)
+    local factor = math.clamp(eff * dt * 6, 0, 1)
+
+    if AB.lockMode == "Soft" or AB.lockMode == "Magnet" then
+        return Vector2.new(
+            cur.X + (tRot.X - cur.X) * factor,
+            cur.Y + abAngDiff(cur.Y, tRot.Y) * factor
+        )
+    else
+        local distP = math.abs(tRot.X - cur.X)
+        local distY = math.abs(abAngDiff(cur.Y, tRot.Y))
+        local dist  = math.sqrt(distP^2 + distY^2)
+        if abCurveStart == nil or dist > 0.5 then
+            abCurveStart = cur; abCurveProgress = 0
+        end
+        abCurveEnd = tRot
+        local speed2 = (AB.curvePct / 100) * 3 * eff
+        abCurveProgress = math.clamp(abCurveProgress + speed2 * dt, 0, 1)
+        local t = abCurveProgress
+        local curved = t * t * (3 - 2*t)
+        local nP = abCurveStart.X + (abCurveEnd.X - abCurveStart.X) * curved
+        local nY = abCurveStart.Y + abAngDiff(abCurveStart.Y, abCurveEnd.Y) * curved
+        if abCurveProgress >= 1 then abCurveStart = nil; abCurveProgress = 0 end
+        return Vector2.new(nP, nY)
+    end
+end
+
+-- keep aimbot shim for rest of script compatibility
+local aimbot = { enabled = false, lockedTarget = nil, smoothCF = nil }
+local function clearAimbotLock()
+    abTgt = nil; abLockT = 0; abDoReact = false; abPrevPos = nil
+    abCurveStart = nil; abCurveProgress = 0
+    aimbot.lockedTarget = nil; aimbot.smoothCF = nil
+end
+
+local backshoot    = { enabled=false, connection=nil, target=nil, origCFrame=nil }
 local bulletTracers    = {}
 local lastShotTime     = 0
 local lastShootSoundAt = 0
@@ -1993,6 +2145,7 @@ local lastHitTime      = 0
 Players.PlayerRemoving:Connect(function(player)
     targetlasthp[player] = nil
 end)
+
 
 
 local function muzzlepos()
@@ -3040,74 +3193,84 @@ local function closestplayerinfov(radius)
 end
 
 
-local localFighter   = nil
-local lastFireTime   = 0
-local fireCooldown   = 0
+-- ═══════════════════════════════════════════
+-- SILENT AIM — Utility.Raycast override
+-- ═══════════════════════════════════════════
+local _sa_enabled = false
+local _sa_hit_part = "Head"
+local _sa_old_raycast = nil
+local _sa_hooked = false
 
-local function firesilent()
-    if not silentAim.enabled then return end
-    local cw = curweap2()
-    if cw and weaponstricted(cw) then return end
-    local now = tick()
-    if now - lastFireTime < fireCooldown then return end
-    local closest = closestplayerinfov(silentAim.fovRadius)
-    if not closest then return end
-    local tp = Players:GetPlayerFromCharacter(closest)
-    if antikatana and tp and katanadeflect(tp) then return end
-    local part = hitpartfromname(closest, silentAim.hitPart)
-    if not part then return end
-    local myChar = LocalPlayer.Character
-    local root   = myChar and myChar:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-    local equipped = localFighter and localFighter.EquippedItem
-    if not equipped then return end
-    local objId = equipped:Get("ObjectID")
-    if not objId then return end
-    lastFireTime  = now
-    local cam = workspace.CurrentCamera
-    local shootPos  = cam and cam.CFrame.Position or root.Position
-    local targetPos = part.Position
-    local hitRoll = shouldHitTarget()
-    if not hitRoll then
-        if cam then
-            local missOffset = Vector3.new(
-                (math.random() - 0.5) * 20,
-                (math.random() - 0.5) * 20,
-                (math.random() - 0.5) * 10
-            )
-            targetPos = cam.CFrame.Position + cam.CFrame.LookVector * 100 + missOffset
+local function sa_fetch_entities()
+    local entities = {}
+    for _, v in pairs(workspace:GetChildren()) do
+        if v:FindFirstChildOfClass("Humanoid") then
+            table.insert(entities, v)
+        elseif v.Name == "HurtEffect" then
+            for _, child in pairs(v:GetChildren()) do
+                if child.ClassName ~= "Highlight" then
+                    table.insert(entities, child)
+                end
+            end
         end
     end
-    local aimDir = (targetPos - shootPos).Unit
-    local aimCFrame = CFrame.lookAt(shootPos, shootPos + aimDir)
-    local data = {
-        [utf8.char(1)] = {
-            [utf8.char(0)] = Utility:EncodeCFrame(aimCFrame),
-            [utf8.char(1)] = Utility:EncodeCFrame(aimCFrame),
-            [utf8.char(2)] = part,
-            [utf8.char(3)] = Utility:EncodeCFrame(CFrame.new(0.43, 0.25, 0.42)),
-        },
-    }
-    pcall(function()
-        ReplicatedStorage.Remotes.Replication.Fighter.UseItem:FireServer(
-            objId,
-            EnumLibrary:ToEnum("StartShooting"),
-            data,
-            nil
-        )
-    end)
+    return entities
 end
 
-RunService.Heartbeat:Connect(function()
-    if silentAim.enabled then
-        if getgenv()._rageDelayActive then return end
-        if config and config.target and config.target.enabled and not getgenv()._rageCanShoot then return end
-        -- Auto-fire only: no mouse click required (mobile friendly)
-        if silentAim.autoShoot then
-            firesilent()
+local function sa_fetch_nearest()
+    local cam = workspace.CurrentCamera
+    local target, dist = nil, math.huge
+    local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+    for _, entity in pairs(sa_fetch_entities()) do
+        if entity ~= LocalPlayer.Character and entity:FindFirstChild("HumanoidRootPart") then
+            local part = entity:FindFirstChild(_sa_hit_part)
+            if part then
+                local pos, visible = cam:WorldToViewportPoint(part.Position)
+                if visible then
+                    local mag = (center - Vector2.new(pos.X, pos.Y)).Magnitude
+                    if mag < dist then
+                        target, dist = entity, mag
+                    end
+                end
+            end
         end
     end
-end)
+    return target
+end
+
+local function sa_hook()
+    if _sa_hooked then return end
+    if not Utility then
+        Library:Notify("SA: Utility module not loaded", 3)
+        return
+    end
+    _sa_old_raycast = Utility.Raycast
+    Utility.Raycast = function(...)
+        local arguments = {...}
+        if _sa_enabled and arguments[4] == 999 then
+            local aim = sa_fetch_nearest()
+            local node = aim and aim:FindFirstChild(_sa_hit_part)
+            if node then
+                arguments[3] = node.Position
+            end
+        end
+        return _sa_old_raycast(table.unpack(arguments))
+    end
+    _sa_hooked = true
+    Library:Notify("SA: Raycast hooked", 3)
+end
+
+local function sa_unhook()
+    if not _sa_hooked or not _sa_old_raycast then return end
+    if Utility then Utility.Raycast = _sa_old_raycast end
+    _sa_hooked = false
+    _sa_old_raycast = nil
+end
+
+
+
+-- keep silentAim shim so rest of script doesn't error
+local silentAim = { enabled = false, hitPart = "Head", fovRadius = 100, autoShoot = false }
 
 
 repeat task.wait() until game:IsLoaded() and LocalPlayer.Parent and LocalPlayer:FindFirstChild("PlayerScripts")
@@ -3211,115 +3374,54 @@ local function getAimbotLerpAlpha(dt)
     return math.clamp(speed * dt, 0, 1)
 end
 
-local AIMBOT_RENDER_BIND = "InstanceAimbotUpdate"
-local aimbotConnection
-local aimbotUsingBind = false
+-- AB aimbot RenderStepped loop (from Luau.txt)
+RunService.RenderStepped:Connect(function(dt)
+    Camera = workspace.CurrentCamera
+    local c = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+    abCirc.Position = c; abCirc.Radius = abEffFov(); abCirc.Visible = AB.drawFov and AB.on
 
-local function stepAimbot(dt)
-    dt = dt or (1 / 240)
-    if not aimbot.enabled then
-        clearAimbotLock()
-        return
-    end
-
-    local cam = workspace.CurrentCamera
-    if not cam then
-        return
-    end
-    Camera = cam
-
-    if not aimbot.lockedTarget then
-        aimbot.lockedTarget = closesttocursor()
-        aimbot.smoothCF = getUnstretchedCameraCFrame(cam)
-        if not aimbot.lockedTarget then
-            return
+    if AB.on and camController then
+        if abDoReact then
+            abReactT = abReactT - dt
+            if abReactT <= 0 then abDoReact = false end
         end
-    end
-
-    if not aimbot.lockedTarget.Parent or not aimbot.lockedTarget:IsDescendantOf(workspace) then
-        clearAimbotLock()
-        return
-    end
-
-    if aimbot.wallCheck then
-        local myChar2 = LocalPlayer.Character
-        local myRoot2 = myChar2 and myChar2:FindFirstChild("HumanoidRootPart")
-        if myRoot2 then
-            local params = RaycastParams.new()
-            params.FilterDescendantsInstances = { myChar2 }
-            params.FilterType = Enum.RaycastFilterType.Exclude
-            local dir = aimbot.lockedTarget.Position - myRoot2.Position
-            local result = workspace:Raycast(myRoot2.Position, dir, params)
-            if result then
-                local hitPart = result.Instance
-                local hitModel = hitPart and hitPart:FindFirstAncestorOfClass("Model")
-                local hitPlayer = hitModel and Players:GetPlayerFromCharacter(hitModel)
-                local targetPlayer = Players:GetPlayerFromCharacter(aimbot.lockedTarget:FindFirstAncestorOfClass("Model"))
-                if not hitPlayer or hitPlayer ~= targetPlayer then
+        if not abDoReact then
+            if abTgt and not abTgtValid(abTgt) then clearAimbotLock() end
+            if not abTgt then
+                abTgt = abFind()
+                if abTgt then
+                    abLockT=0; abDoReact=true; abReactT=AB.reactTime/1000
+                    abPrevPos=nil; abCurveStart=nil; abCurveProgress=0
+                end
+            end
+            if abTgt then
+                abLockT = abLockT + dt
+                if abLockT > AB.maxLock then
                     clearAimbotLock()
-                    return
+                elseif abInFov(abTgt, abEffFov()) then
+                    pcall(function()
+                        local aimPos = abGetPredictedPos(abTgt)
+                        local cp     = Camera.CFrame.Position
+                        local du     = (aimPos - cp).Unit
+                        local tp2    = math.asin(math.clamp(du.Y,-1,1))
+                        local ty     = math.atan2(-du.X,-du.Z)
+                        local tRot   = Vector2.new(tp2,ty)
+                        local cur    = camController.Rotation
+                        local sp,_   = Camera:WorldToViewportPoint(aimPos)
+                        local screenDist = (Vector2.new(sp.X,sp.Y) - c).Magnitude
+                        local newRot = applySmartLock(tRot,cur,dt,screenDist,abEffFov())
+                        camController:ApplyRotationDelta(Vector2.new(
+                            newRot.X - cur.X,
+                            abAngDiff(cur.Y, newRot.Y)
+                        ))
+                    end)
+                else
+                    clearAimbotLock()
                 end
             end
         end
     end
-
-    local myChar = LocalPlayer.Character
-    if not myChar then
-        return
-    end
-    local myHead = myChar:FindFirstChild("Head")
-    if not myHead then
-        clearAimbotLock()
-        return
-    end
-    if not camController then
-        return
-    end
-
-    if not aimbot.smoothCF then
-        aimbot.smoothCF = getUnstretchedCameraCFrame(cam)
-    end
-
-    local lookCF = CFrame.lookAt(cam.CFrame.Position, aimbot.lockedTarget.Position)
-    local alpha = getAimbotLerpAlpha(dt)
-    aimbot.smoothCF = aimbot.smoothCF:Lerp(lookCF, alpha)
-
-    if camController and camController.MimicRotation then
-        pcall(function()
-            camController:MimicRotation(aimbot.smoothCF)
-        end)
-    end
-end
-
-local function updaimbot()
-    if aimbotConnection then
-        aimbotConnection:Disconnect()
-        aimbotConnection = nil
-    end
-    if aimbotUsingBind then
-        pcall(function()
-            RunService:UnbindFromRenderStep(AIMBOT_RENDER_BIND)
-        end)
-        aimbotUsingBind = false
-    end
-
-    aimbotFOVContainer.Visible = aimbot.showFov
-    if not aimbot.enabled then
-        clearAimbotLock()
-        return
-    end
-
-    local ok = pcall(function()
-        RunService:UnbindFromRenderStep(AIMBOT_RENDER_BIND)
-        RunService:BindToRenderStep(AIMBOT_RENDER_BIND, Enum.RenderPriority.Camera.Value + 1, stepAimbot)
-    end)
-    if ok then
-        aimbotUsingBind = true
-    else
-        aimbotConnection = RunService.RenderStepped:Connect(stepAimbot)
-    end
-end
-
+end)
 
 local function closestplayerbs()
     local best, bestD = nil, math.huge
@@ -3443,8 +3545,21 @@ silentAimBox:AddToggle("SilentAim", {
     Text     = "enable",
     Default  = false,
     Callback = function(val)
+        _sa_enabled = val
         silentAim.enabled = val
-        if not val then curtarget = nil end
+        if val then
+            sa_hook()
+        end
+    end
+})
+
+silentAimBox:AddDropdown("HitPartDropdown", {
+    Text     = "hit part",
+    Default  = "Head",
+    Values   = HPlist,
+    Callback = function(val)
+        _sa_hit_part = val
+        silentAim.hitPart = val
     end
 })
 
@@ -3486,13 +3601,6 @@ silentAimBox:AddSlider("HitChance", {
     Rounding = 0,
     Compact  = true,
     Callback = function(val) silentAim.hitChance = tonumber(val) or 100 end
-})
-
-silentAimBox:AddDropdown("HitPartDropdown", {
-    Text     = "hit part",
-    Default  = "Head",
-    Values   = HPlist,
-    Callback = function(val) silentAim.hitPart = val end
 })
 
 
@@ -3653,61 +3761,77 @@ silentCustBox:AddSlider("SilentFOVFollowSmooth", {
 })
 
 -- ── Aimbot: Enable + Hit Part ──
+-- ── Easy Mode ──
+aimbotBox:AddLabel("Style: Casual / Normal / Tryhard")
+aimbotBox:AddDropdown("EZPreset", {
+    Text="Easy Preset", Default="Normal", Values={"Casual","Normal","Tryhard"},
+    Callback=function(v) AB.easyPreset=v; if AB.easyMode then applyEasyPreset(v) end end,
+})
+aimbotBox:AddToggle("EZMode", { Text="Use Easy Mode", Default=false,
+    Callback=function(v)
+        AB.easyMode=v
+        if v then applyEasyPreset(AB.easyPreset) end
+    end,
+})
 aimbotBox:AddToggle("AimbotToggle", {
     Text = "enable",
     Default = false,
     Callback = function(val)
-        aimbot.masterEnabled = val
-        aimbot.enabled = val
+        AB.on = val
         if not val then clearAimbotLock() end
-        updaimbot()
     end
 })
-
+aimbotBox:AddToggle("ABTeam", { Text="Team Check", Default=false, Callback=function(v) AB.team=v end })
+aimbotBox:AddToggle("ABVis",  { Text="Visible Check", Default=false, Callback=function(v) AB.vis=v end })
 aimbotBox:AddDropdown("AimbotHitPart", {
-    Text = "hit part", Default = "Head",
-    Values = { "Head", "HumanoidRootPart", "Torso", "UpperTorso", "LowerTorso" },
-    Callback = function(val) aimbot.targetPart = val end
+    Text="Target Part", Default="Head",
+    Values={"Head","HumanoidRootPart","UpperTorso","LowerTorso"},
+    Callback=function(v) AB.part=v end
+})
+aimbotBox:AddDropdown("ABMode", {
+    Text="Lock Mode", Default="Soft", Values={"Soft","Magnet","Curve"},
+    Callback=function(v) AB.lockMode=v; abCurveStart=nil; abCurveProgress=0 end
 })
 
--- ── Aimbot Customization: 5 Speed/Lock Sliders ──
+-- ── Speed/Lock Sliders ──
 aimbotCustBox:AddSlider("AimbotSpeed", {
-    Text = "speed", Default = 100, Min = 1, Max = 500, Rounding = 0,
-    Compact = true,
-    Callback = function(val) aimbot.speed = val / 100 end
+    Text="Speed", Default=100, Min=1, Max=500, Rounding=0, Compact=true,
+    Callback=function(v) AB.speed=v/100 end
 })
-
 aimbotCustBox:AddSlider("AimbotSpeedAttack", {
-    Text = "speed in attack", Default = 100, Min = 1, Max = 500, Rounding = 0,
-    Compact = true,
-    Callback = function(val) aimbot.speedAttack = val / 100 end
+    Text="Speed In Attack", Default=100, Min=1, Max=500, Rounding=0, Compact=true,
+    Callback=function(v) AB.speedAttack=v/100 end
 })
-
 aimbotCustBox:AddSlider("AimbotSpeedScale", {
-    Text = "speed scale", Default = 50, Min = 0, Max = 100, Rounding = 0,
-    Compact = true,
-    Callback = function(val) aimbot.speedScaleFov = val end
+    Text="Speed Scale-FOV", Default=50, Min=0, Max=100, Rounding=0, Compact=true,
+    Callback=function(v) AB.speedScaleFov=v end
 })
-
 aimbotCustBox:AddSlider("AimbotMaxLock", {
-    Text = "max lock on", Default = 300, Min = 1, Max = 1000, Rounding = 0,
-    Compact = true,
-    Callback = function(val) aimbot.maxLock = val / 100 end
+    Text="Max Lock-On", Default=300, Min=1, Max=1000, Rounding=0, Compact=true,
+    Callback=function(v) AB.maxLock=v/100 end
 })
-
 aimbotCustBox:AddSlider("AimbotReactTime", {
-    Text = "reaction time (ms)", Default = 100, Min = 0, Max = 500, Rounding = 0,
-    Compact = true,
-    Callback = function(val) aimbot.reactTime = val end
+    Text="Reaction Time (ms)", Default=100, Min=0, Max=500, Rounding=0, Compact=true,
+    Callback=function(v) AB.reactTime=v end
+})
+aimbotCustBox:AddSlider("ABFov", {
+    Text="FOV Radius", Default=150, Min=0, Max=600, Rounding=0, Compact=true,
+    Callback=function(v) AB.fov=v; abCirc.Radius=v end
+})
+aimbotCustBox:AddToggle("ABDrawFov", { Text="Draw FOV", Default=false, Callback=function(v) AB.drawFov=v end })
+aimbotCustBox:AddToggle("ABDynFov",  { Text="Dynamic FOV", Default=false, Callback=function(v) AB.dynFov=v end })
+aimbotCustBox:AddSlider("ABCurve", {
+    Text="Curve Strength %", Default=10, Min=1, Max=100, Rounding=0, Compact=true,
+    Callback=function(v) AB.curvePct=v end
 })
 
-updaimbot()
 setupShootDetection()
 
 do
 local LeftGroup = Tabs.Combat:AddLeftGroupbox("gun")
 
 local Players = game:GetService("Players")
+
 local LocalPlayer = Players.LocalPlayer
 local RS = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
@@ -4049,7 +4173,7 @@ hitEffectsToggle:AddColorPicker("HitEffectColorPicker", {
     end
 })
 
-local hitEffectDepBox = hitEffectsBox:AddDependencyBox()
+local hitEffectDepBox = hitEffectsBox
 
 hitEffectDepBox:AddSlider("HitEffectFloatSpeed", {
     Text = "float speed",
@@ -4097,9 +4221,6 @@ local function loadFortnightFont()
 end
 loadFortnightFont()
 
-hitEffectDepBox:SetupDependencies({
-    { hitEffectsToggle, true }
-})
 
 hitEffectsBox:AddDropdown("HitEffectStyleDropdown", {
     Text = "style",
@@ -6177,7 +6298,7 @@ local noAnimToggle = viewportBox:AddToggle("NoAnimations", {
     end,
 })
 
-local noAnimDepBox = viewportBox:AddDependencyBox()
+local noAnimDepBox = viewportBox
 noAnimDepBox:AddDropdown("NoAnimationsList", {
     Text = "disabled animations",
     Values = { "Idle", "Reloading", "Sprinting", "Crouching", "Shooting", "Aiming" },
@@ -6186,9 +6307,6 @@ noAnimDepBox:AddDropdown("NoAnimationsList", {
     Callback = function(v)
         noAnimBlocked = v or {}
     end,
-})
-noAnimDepBox:SetupDependencies({
-    { noAnimToggle, true },
 })
 
 local mats = { "ForceField", "Neon", "SmoothPlastic", "Glass", "Ice", "Plastic", "Wood", "Marble", "Granite", "Brick", "Cobblestone", "Concrete", "Slate", "Foil" }
@@ -6214,7 +6332,7 @@ local gunChamsToggle = vmBox:AddToggle("GunChams", {
     Callback = function(v) gunColor3 = v end,
 })
 
-local gunChamsDep = vmBox:AddDependencyBox()
+local gunChamsDep = vmBox
 gunChamsDep:AddDropdown("GunMaterial", {
     Text = "gun material",
     Default = "Neon",
@@ -6239,9 +6357,6 @@ gunChamsDep:AddSlider("GunChamTransparency", {
     Compact = true,
     Callback = function(v) gunChamTransparency = v end,
 })
-gunChamsDep:SetupDependencies({
-    { gunChamsToggle, true },
-})
 
 local armChamsToggle = vmBox:AddToggle("ArmChams", {
     Text = "arm chams",
@@ -6264,7 +6379,7 @@ local armChamsToggle = vmBox:AddToggle("ArmChams", {
     Callback = function(v) armColor3 = v end,
 })
 
-local armChamsDep = vmBox:AddDependencyBox()
+local armChamsDep = vmBox
 armChamsDep:AddDropdown("ArmMaterial", {
     Text = "arm material",
     Default = "ForceField",
@@ -6288,9 +6403,6 @@ armChamsDep:AddSlider("ArmChamTransparency", {
     Rounding = 2,
     Compact = true,
     Callback = function(v) armChamTransparency = v end,
-})
-armChamsDep:SetupDependencies({
-    { armChamsToggle, true },
 })
 
 vmBox:AddToggle("GunOutline", {
@@ -6352,7 +6464,7 @@ local gunHighlightToggle = vmBox:AddToggle("GunHighlight", {
     Callback = function(v) gunHighlightBottom = v end,
 })
 
-local gunHighlightDep = vmBox:AddDependencyBox()
+local gunHighlightDep = vmBox
 gunHighlightDep:AddDropdown("GunHighlightMaterial", {
     Text = "gun highlight material",
     Default = "Neon",
@@ -6377,9 +6489,6 @@ gunHighlightDep:AddSlider("GunHighlightOutlineTransparency", {
     Compact = true,
     Callback = function(v) gunHighlightOutlineTrans = v end,
 })
-gunHighlightDep:SetupDependencies({
-    { gunHighlightToggle, true },
-})
 
 local armHighlightToggle = vmBox:AddToggle("ArmHighlight", {
     Text = "arm highlight",
@@ -6398,7 +6507,7 @@ local armHighlightToggle = vmBox:AddToggle("ArmHighlight", {
     Callback = function(v) armHighlightBottom = v end,
 })
 
-local armHighlightDep = vmBox:AddDependencyBox()
+local armHighlightDep = vmBox
 armHighlightDep:AddDropdown("ArmHighlightMaterial", {
     Text = "arm highlight material",
     Default = "Neon",
@@ -6422,9 +6531,6 @@ armHighlightDep:AddSlider("ArmHighlightOutlineTransparency", {
     Rounding = 2,
     Compact = true,
     Callback = function(v) armHighlightOutlineTrans = v end,
-})
-armHighlightDep:SetupDependencies({
-    { armHighlightToggle, true },
 })
 
 vmBox:AddToggle("DisableArms", {
@@ -7448,6 +7554,7 @@ end
 
 local function eqSlot()
     if not rageOn() then return end
+    if config.target.weaponSwitchEnabled == false then return end
     local want = wantSlot()
     local lf = modules.fighter and modules.fighter.LocalFighter
     if not lf then return end
@@ -8928,7 +9035,7 @@ rageui.ragebotBox:AddToggle("AttackCustomOverride", {
     end,
 })
 
-local attackUnderDep = rageui.ragebotBox:AddDependencyBox()
+local attackUnderDep = rageui.ragebotBox
 
 attackUnderDep:AddSlider("UnderAttackOffset", {
     Text = "under offset",
@@ -8948,11 +9055,8 @@ attackUnderDep:AddSlider("UnderAttackOffset", {
     end,
 })
 
-attackUnderDep:SetupDependencies({
-    { attackUnderVisGate, true },
-})
 
-local attackCustomDep = rageui.ragebotBox:AddDependencyBox()
+local attackCustomDep = rageui.ragebotBox
 
 local function onAtkCustom()
     if config.target.attackCustomEnabled and config.state.csyncactive and ragebot.refreshAtk then
@@ -9025,12 +9129,20 @@ attackCustomDep:AddSlider("CustomAttackRadius", {
     end,
 })
 
-attackCustomDep:SetupDependencies({
-    { attackCustomVisGate, true },
-})
 
 syncAtkDeps()
 task.defer(syncAtkDeps)
+
+rageui.ragebotBox:AddToggle("WeaponSwitchEnabled", {
+    Text = "auto weapon switch",
+    Default = true,
+    Callback = function(val)
+        config.target.weaponSwitchEnabled = val
+        if not val then
+            -- switching disabled, do nothing
+        end
+    end,
+})
 
 rageui.ragebotBox:AddDropdown("RageWeaponPick", {
     Text = "weapon",
@@ -9038,6 +9150,7 @@ rageui.ragebotBox:AddDropdown("RageWeaponPick", {
     Values = { "primary", "secondary", "melee" },
     Callback = function(val)
         config.target.weaponPick = val
+        if not config.target.weaponSwitchEnabled then return end
         if config.state.csyncactive and ragebot.refreshAtk then
             ragebot.refreshAtk()
         end
@@ -9504,10 +9617,8 @@ local rageStatusToggle = rageui.ragebotvisualBox:AddToggle("RageStatus", {
     end,
 })
 
-local rageStatusDep = rageui.ragebotvisualBox:AddDependencyBox()
-rageStatusDep:SetupDependencies({
-    { rageStatusToggle, true },
-})
+-- rageStatusDep inlined to ragebotvisualBox
+local rageStatusDep = rageui.ragebotvisualBox
 
 rageStatusDep:AddDropdown("RageStatusMode", {
     Text = "position",
@@ -12765,7 +12876,7 @@ hitNotifBox:AddToggle('HitNotifUi', {
     end
 })
 
-local hitNotifDepBox = hitNotifBox:AddDependencyBox()
+local hitNotifDepBox = hitNotifBox
 hitNotifDepBox:AddSlider('HitNotifDuration', {
     Text = 'duration',
     Default = rbHitCfg.duration,
@@ -12820,7 +12931,7 @@ local hitNotifPositionDropdown = hitNotifDepBox:AddDropdown('HitNotifPosition', 
     end
 })
 
-local hitNotifPosDepBox = hitNotifDepBox:AddDependencyBox()
+local hitNotifPosDepBox = hitNotifDepBox
 hitNotifPosDepBox:AddSlider('HitNotifOffsetX', {
     Text = 'custom x',
     Default = rbHitCfg.offsetX,
@@ -12848,9 +12959,6 @@ hitNotifPosDepBox:AddSlider('HitNotifOffsetY', {
             ragebot.applyHitNotifRootPosition()
         end
     end
-})
-hitNotifPosDepBox:SetupDependencies({
-    { hitNotifPositionDropdown, 'Custom' },
 })
 
 hitNotifDepBox:AddSlider('HitNotifStackGap', {
@@ -12906,10 +13014,6 @@ hitNotifDepBox:AddSlider('HitNotifOutSpeed', {
     Callback = function(val)
         rbHitCfg.animOutDuration = val
     end
-})
-hitNotifDepBox:SetupDependencies({
-    { hitNotificationsToggle, true },
-    { Toggles.HitNotifUi, false },
 })
 
 local deviceBox = Tabs.Misc:AddRightGroupbox('device spoof')
@@ -14431,7 +14535,7 @@ v67:AddToggle('box_filled', {
     Callback = function(Value) _G.Config.Filled.Enable = Value end
 })
 
-BoxDepBox:AddToggle('box_filled_animated', {
+v67:AddToggle('box_filled_animated', {
     Text = 'fill rotation',
     Default = _G.Config.Filled.Animated or false,
     Callback = function(Value)
@@ -14439,7 +14543,7 @@ BoxDepBox:AddToggle('box_filled_animated', {
     end
 })
 
-BoxDepBox:AddToggle('box_glow', {
+v67:AddToggle('box_glow', {
     Text = 'box glow',
     Default = _G.Config.Glow.Enable or false,
     Callback = function(Value)
@@ -14461,7 +14565,7 @@ BoxDepBox:AddToggle('box_glow', {
     end
 })
 
-BoxDepBox:AddToggle('healthbar', {
+v67:AddToggle('healthbar', {
     Text = 'healthbar',
     Default = (ConfigBox.Healthbar and ConfigBox.Healthbar.Enable) or false,
     Callback = function(Value)
@@ -16655,10 +16759,7 @@ local killSoundsToggle = killSoundsTab:AddToggle('KillSoundsEnabled', {
     end,
 })
 
-local killSoundsDep = killSoundsTab:AddDependencyBox()
-killSoundsDep:SetupDependencies({
-    { killSoundsToggle, true },
-})
+local killSoundsDep = killSoundsTab
 
 killSoundsDep:AddDropdown('KillSoundStyle', {
     Text = 'sound',
